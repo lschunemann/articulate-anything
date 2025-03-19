@@ -169,22 +169,19 @@ class LinkPlacementActor(Agent):
         return '```python\n' + example + '\n```'
 
     def _make_system_instruction(self):
-        """
-        ## General Instructions
-        {...}
-
-        ## Examples
-        {...}
-
-        ## Helper code
-        {...}
-
-        ## Placement API
-        {...}
-
-        ## Ending Instructions
-        {...}
-        """
+        """Create system instruction with the correct root link name."""
+        # Get the root link name from config or use the first link in the summary
+        root_link_name = getattr(self.cfg, "root_link_name", None)
+        
+        if not root_link_name:
+            # Extract from link summary
+            link_summary_path = join_path(self.cfg.dataset_dir, "link_summary.txt")
+            link_summary = file_to_string(link_summary_path)
+            import re
+            match = re.search(r'Robot Link Summary:\s*\n\s*- (\w+)', link_summary)
+            root_link_name = match.group(1) if match else "base"
+        
+        # Get the optional image instruction
         if self.cfg.link_actor.mode == "image":
             optional_image_inst = "We will also provide you a groundtruth image of the object with the correct placement of the parts. The image is a PIL image object. Please study the image carefully to understand the correct placement of the links"
         elif self.cfg.link_actor.mode == "text":
@@ -192,21 +189,29 @@ class LinkPlacementActor(Agent):
         else:
             raise ValueError(
                 f"Invalid mode {self.cfg.link_actor.mode}. Must be either 'image' or 'text'")
-
+        
+        # Replace "base" with the actual root link name in the instructions
         system_instruction = LINK_PLACEMENT_INSTRUCTION.replace(
             "{optional_image_inst}", optional_image_inst
         )
-
+        
+        # Update the instruction to use the correct root link name
+        system_instruction = system_instruction.replace("base", root_link_name)
+        
+        # Add a note about the root link
+        system_instruction += f"\n\nIMPORTANT: The root link of this object is '{root_link_name}', not 'base'. Use this as the parent for other links.\n"
+        
         example = self._get_code_example()
         system_instruction += '## Examples\n\n Here are some examples of creating various objects using our API\n'
         system_instruction += example
-
+        
         system_instruction += HELPER_CODE
         system_instruction += PLACE_RELATIVE_TO_SIGNATURE
-
+        
         system_instruction += LINK_PLACEMENT_ENDING
-
+        
         return system_instruction
+
 
     def parse_response(self, response, **kwargs):
         string_to_file(response.text, join_path(

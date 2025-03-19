@@ -13,14 +13,14 @@ from articulate_anything.agent.actor.mesh_retrieval.obj_selector import (
     get_obj_image,
     save_obj_selector_viz,
     get_candidate_objs_from_categories,
+    GeneratedObjectSelector
 )
 from articulate_anything.utils.utils import (
     create_task_config,
     Steps,
     join_path
 )
-
-
+        
 def mesh_retrieval(cfg: DictConfig):
     visual_modalities = ["image", "video"]
     if cfg.modality == "text":
@@ -29,10 +29,66 @@ def mesh_retrieval(cfg: DictConfig):
         return mesh_retrieval_visual(cfg)
     elif cfg.modality == "partnet":
         return
+    elif cfg.modality == "generated":
+        return mesh_retrieval_generated(cfg)
     else:
         logging.error(
             f"Modality {colored(cfg.modality, 'red')} not supported. "
-            f"Available modalities are: text, {', '.join(visual_modalities)}")
+            f"Available modalities are: text, {', '.join(visual_modalities)}, partnet, generated")
+
+
+
+
+def mesh_retrieval_generated(cfg: DictConfig) -> Steps:
+    """Load pre-generated and segmented meshes based on visual input."""
+    steps = Steps()
+    
+    # 1. Similar to visual mesh retrieval, we'll use a category selector
+    # This step can be simplified since we already know what object we're working with
+    category_selector = CategorySelector(create_task_config(cfg, "category_selector"))
+    category_selector.generate_prediction(cfg.prompt,
+                                         additional_prompt=cfg.additional_prompt,
+                                         **cfg.gen_config,
+                                         **cfg.video_encoding)
+    
+    # We can either use the actual categories or just set a placeholder
+    obj_categories = ["generated_object"]  # Simplified since we're using our own meshes
+    steps.add_step("Category Selection", category_selector)
+    
+    # 2. Create a custom object selector that points to our generated meshes
+    obj_selector = GeneratedObjectSelector(create_task_config(cfg, "obj_selector"))
+    
+    # Get the frame from the video to use as reference
+    gt_image = get_obj_image(cfg.prompt, frame_index=cfg.obj_selector.frame_index)
+    
+    # Instead of selecting from candidates, we're directly using our generated object
+    obj_selector.generate_prediction(gt_image, 
+                                    segmented_mesh_dir=cfg.segmented_mesh_dir,
+                                    **cfg.gen_config)
+    
+    steps.add_step("Object Selection", obj_selector)
+    return steps
+
+
+# def segment_mesh():
+#     import subprocess
+
+#     subprocess.run(['conda', 'run', '-n', 'sam', 'python', 'mesh_segmentation.py'])
+
+
+# def mesh_generation(cfg: DictConfig):
+#     # TODO: add API mesh generation
+#     steps = Steps()
+#     # mesh_generator = generate_mesh()
+#     # mesh_generator.generate_prediction()
+#     # steps.add_step("Mesh Generation", mesh_generator)
+
+#     mesh_load = mesh_loader()
+#     steps.add_step("Mesh Generation", mesh_load)
+#     segmented_mesh = segment_mesh(video_path)
+#     steps.add_step("Mesh Segmentation", segmented_mesh)
+#     return steps
+
 
 
 def mesh_retrieval_text(cfg: DictConfig) -> Steps:

@@ -22,7 +22,9 @@ class InContextExampleModel(Agent):
         if self.cfg.in_context.shuffle_examples:
             random.shuffle(selected_examples)
 
+        print(f"Number of examples: {len(selected_examples)}")
         for i, example_path in enumerate(selected_examples):
+            if i > 2: break # TODO: fixing 50 image limit for now
             example_kwargs = self._extract_example_kwargs(example_path)
             if example_kwargs:
                 formatted_example = self._format_content(**example_kwargs)

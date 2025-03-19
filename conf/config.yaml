@@ -9,18 +9,20 @@ max_load_per_gpu: 10
 obj_ids: null
 gpu_id: 0
 cam_view: frontview
-model_name: gemini-1.5-flash-latest
+model_name: gpt-4o #gemini-1.5-flash-latest
 link_placement_path: null
 gen_config:
   overwrite: false # whether to overwrite the VLM output
 render_part_views: false
+generated: false
+segmented_mesh_dir: "datasets/segmentation_masks/drawer_multi-view/output"
 
 actor_critic:
   actor_only: false
   start_seed: 0
-  num_seeds: 1
+  num_seeds: 3 # standard=1
   start_iter: 0
-  max_iter: 1
+  max_iter: 3 #standard=1
   conservative: true
   cutoff: 5
 

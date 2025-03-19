@@ -196,6 +196,8 @@ class JointCritic(Agent):
         # Extract the JSON string from the response text
         json_str = response.text.strip().strip("```json").strip()
 
+        print(f"API RESPONSE: {response}")
+
         # Parse the JSON string into a dictionary
         parsed_response = json.loads(json_str, strict=False)
 

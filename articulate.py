@@ -43,7 +43,7 @@ class ArticulationPipeline:
         self.cfg = cfg
         self.steps = Steps()
         self.progress_callback = progress_callback
-        seed_everything(0)
+        seed_everything(self.cfg.actor_critic.start_seed) #TODO changed from 0
 
     def notify_progress(self, message: str) -> None:
         """Update progress if callback is provided"""

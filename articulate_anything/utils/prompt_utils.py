@@ -13,21 +13,6 @@ import base64
 from PIL import Image
 import anthropic
 from openai import OpenAI
- 
-
-
-def setup_gemini(model_name, system_instruction=None, api_key=None):
-    api_key = api_key or os.environ.get("API_KEY")
-    if not api_key:
-        return None
-
-    genai.configure(api_key=api_key)
-
-    # genai.list_models()
-    return genai.GenerativeModel(
-        model_name,
-        system_instruction=system_instruction,
-    )
 
 
 
@@ -36,9 +21,11 @@ def setup_vlm_model(model_name, system_instruction=None, api_key=None):
     if "gpt" in model_name:
         return setup_gpt(model_name, system_instruction, api_key)
     elif "gemini" in model_name:
-        return setup_gemini(model_name, system_instruction, api_key)
+        # return setup_gemini(model_name, system_instruction, api_key)
+        return setup_gpt(model_name, system_instruction, api_key)
     elif "claude" in model_name:
-        return setup_claude(model_name, system_instruction, api_key)
+        # return setup_claude(model_name, system_instruction, api_key)
+        return setup_gpt(model_name, system_instruction, api_key)
     else:
         raise ValueError("Model name must contain 'gpt' or 'gemini'. Got: {}".format(model_name))
 
@@ -51,19 +38,32 @@ def setup_gemini(model_name, system_instruction=None, api_key=None):
 
     # genai.list_models()
     return genai.GenerativeModel(
-        model_name,
+        model_name='gemini-1.5-flash',
         system_instruction=system_instruction,
+        # base_url="https://ai-gateway.mytkhgroup.com/"
     )
+    # client = setup_gpt(model_name, system_instruction, api_key)
+    # return client
+    # return OpenAI(
+    #     # model_name=model_name,
+    #     api_key=api_key,
+    #     base_url="https://ai-gateway.mytkhgroup.com/"
+    # )
 
 
 
 
 class ClaudeWrapper:
     def __init__(self, model_name, system_instruction, api_key):
-        self.model_name = model_name
+        self.model_name = "claude-3-5-sonnet-latest"#model_name
+        # self.model_name = "gpt-4o"#model_name
+        # self.model_name = "gemini-1.5-flash"#model_name
         self.system_instruction = system_instruction
         self.api_key = api_key
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        # print("setting up Claude")
+        self.client = anthropic.Anthropic(api_key=self.api_key, base_url="https://ai-gateway.mytkhgroup.com/")
+        # self.client = OpenAI(api_key=self.api_key, base_url="https://ai-gateway.mytkhgroup.com/")
+        # print("successfully set up claude")
     
     def _encode_image_to_base64(self, pil_image):
         """Convert PIL Image to base64 string"""
@@ -87,14 +87,22 @@ class ClaudeWrapper:
                 })
             elif isinstance(part, Image.Image):
                 base64_image = self._encode_image_to_base64(part)
-                formatted_content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": base64_image
+                formatted_content.append(
+                    {
+                    "type": "image_url", 
+                    "image_url": 
+                    {
+                        "url": f"data:image/jpeg;base64,{base64_image}",
+                        }
                     }
-                })
+                    # {
+                    # "type": "image",
+                    # "source": {
+                    #     "type": "base64",
+                    #     "media_type": "image/jpeg",
+                    #     "data": base64_image
+                    # }}
+                )
             elif isinstance(part, dict):
                 formatted_content.append(part)
         
@@ -118,6 +126,7 @@ class ClaudeWrapper:
                 }
             ]
         )
+    
         print(">>> USAGE", message.usage)
         
         class MockResponse:
@@ -141,6 +150,7 @@ def setup_claude(model_name, system_instruction=None, api_key=None):
     """
     api_key = api_key or os.environ.get("API_KEY")
     if not api_key:
+        print("No API key found")
         return None
     
     return ClaudeWrapper(
@@ -157,7 +167,8 @@ class GPTWrapper:
         self.model_name = model_name
         self.system_instruction = system_instruction
         self.api_key = api_key
-        self.client = OpenAI(api_key=self.api_key)
+        self.client = OpenAI(api_key=self.api_key, base_url="https://ai-gateway.mytkhgroup.com/")
+        self.model_name = model_name#"gpt-4o"
 
     def _encode_image_to_base64(self, pil_image):
         """Convert PIL Image to base64 string"""
@@ -175,17 +186,25 @@ class GPTWrapper:
         
         for part in prompt_parts:
             if isinstance(part, str):
-                formatted_content.append(part)
+                # TODO: either this or adding detail fixed API error 400 with message content
+                formatted_content.append({
+                    "type": "text",
+                    "text": part
+                })
+                # formatted_content.append(part)
             elif isinstance(part, Image.Image):
                 # Convert PIL Image to base64 and format for OpenAI
                 base64_image = self._encode_image_to_base64(part)
-                formatted_content.append({
-                    "type": "image_url",
-                    "image_url": {
+                formatted_content.append(
+                    {
+                    "type": "image_url", 
+                    "image_url": 
+                    {
                         "url": f"data:image/jpeg;base64,{base64_image}",
-                        "detail": "low"
+                        "detail": "high" # TODO: either this or adding text formatting fixed API error 400 with message content
+                        }
                     }
-                })
+                )
             elif isinstance(part, dict) and part.get("type") == "image_url":
                 # If it's already in the correct format, pass it through
                 formatted_content.append(part)
@@ -197,6 +216,8 @@ class GPTWrapper:
         
         # Format the content for OpenAI
         formatted_content = self._format_content(prompt_parts)
+
+        # print(f"message: {formatted_content}")
         
         completion = self.client.chat.completions.create(
             model=self.model_name,

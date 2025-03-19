@@ -130,7 +130,8 @@ def preprocess_objects(cfg: DictConfig):
         "image": lambda obj_id, gpu_id, cfg: render_partnet_obj(obj_id, gpu_id, cfg, render_mode="stationary"),
         "video": lambda obj_id, gpu_id, cfg: render_partnet_obj(obj_id, gpu_id, cfg, render_mode="stationary"),
         # "video": lambda obj_id, gpu_id, cfg: render_partnet_obj(obj_id, gpu_id, cfg, render_mode="move"),
-        "partnet": preprocess_partnet_object
+        "partnet": preprocess_partnet_object,
+        "generated": render_parts,
     }.get(cfg.modality)
 
     if process_function:

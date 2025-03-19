@@ -58,6 +58,8 @@ class ObjectDetector(Agent):
     def parse_response(self, response, **kwargs):
         json_str = response.text.strip().strip('```json').strip()
 
+        # print(f"Json reply: {json_str}")
+
         parsed_response = json.loads(json_str, strict=False)
 
         save_json(parsed_response, join_path(
@@ -75,7 +77,7 @@ class CategorySelector(Agent):
     def _make_system_instruction(self):
         return "COMPOSITE SYSTEM."
 
-    def generate_prediction(self, prompt, additional_prompt=None, gen_config=None,
+    def generate_prediction(self, prompt, additional_prompt=None, gen_config=None,  #TODO try: additional_prompt='drawer' or passing to func
                             clip_config={},
                             overwrite=False, **kwargs):
         if (

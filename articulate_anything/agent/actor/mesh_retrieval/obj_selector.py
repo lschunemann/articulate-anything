@@ -179,6 +179,49 @@ class HierarchicalObjectSelector(Agent):
 
     def load_predicted_rendering(self):
         return Image.open(join_path(self.cfg.out_dir, "chosen_object.png"))
+    
+class GeneratedObjectSelector(Agent):
+    """Agent that selects the generated and segmented object."""
+    def _make_system_instruction(self):
+        """Implement required method from Agent class."""
+        return """
+        You are an assistant that helps select objects from generated and segmented meshes.
+        Your task is to identify the object from the input image and match it with the 
+        corresponding segmented mesh files.
+        """
+    
+    def parse_response(self, response):
+        pass
+    
+    def generate_prediction(self, gt_image, segmented_mesh_dir=None, **kwargs):
+        """Select the generated object.
+        
+        Args:
+            gt_image: The ground truth image from the video
+            segmented_mesh_dir: Directory containing segmented meshes
+        """
+        if segmented_mesh_dir is None:
+            segmented_mesh_dir = join_path(self.cfg.out_dir, "segmented_meshes")
+        
+        # Save the ground truth image for reference
+        gt_image_path = join_path(self.cfg.out_dir, "gt_image.png")
+        gt_image.save(gt_image_path)
+        
+        # Create a prediction that mimics what would be expected by the next steps
+        self.prediction = {
+            "obj_id": "generated_object",
+            "score": 1.0,
+            "segmented_mesh_dir": segmented_mesh_dir
+        }
+        
+        # Save the prediction to a JSON file
+        save_json(self.prediction, join_path(self.cfg.out_dir, "obj_selection.json"))
+        
+    def load_prediction(self):
+        """Load the prediction from the JSON file."""
+        if hasattr(self, "prediction"):
+            return self.prediction
+        return load_json(join_path(self.cfg.out_dir, "obj_selection.json"))
 
 def make_obj_selector(cfg):
     ObjSelectorCls = {
@@ -200,8 +243,11 @@ def get_candidate_objs(most_similar_object,
         img_path = join_path(input_dir, str(obj_id),
                              f"robot_{cam_view}.png")
         if os.path.exists(img_path):
-            candidate_images.append(Image.open(img_path))
-            valid_obj_ids.append(obj_id)
+            try:
+                candidate_images.append(Image.open(img_path))
+                valid_obj_ids.append(obj_id)
+            except: # TODO: figure out this error
+                continue
         else:
             logging.warning(f"Image not found for object ID {obj_id}")
     return candidate_images, valid_obj_ids

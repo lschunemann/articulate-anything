@@ -1,12 +1,13 @@
 # Python egg metadata
 *.egg-info
 
+.env
 
 # Compiled Python files
 *.pyc
 __pycache__/
 
-
+**datasets**
 **outputs
 **results**
 *partnet-mobility-v0*
