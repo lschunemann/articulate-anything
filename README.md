@@ -1,6 +1,6 @@
 Main methods I added:
 
-- articulate_anyhting/2d_to_3d.py
+articulate_anyhting/2d_to_3d.py
 
 """
 usage: 'python articulate_anything/2d_to_3d.py drawer'
@@ -27,7 +27,7 @@ The output is visualizations of the part meshes and segmented point clouds as we
 """
 
 
-- articulate_anything/chamfer_distance.py
+articulate_anything/chamfer_distance.py
 """
 usage: 'python articulate_anything/chamfer_distance.py drawer drawer y'
 input: name of groundtruth object "name_RLBench.obj", name of generated mesh, whether to save visualization (y or n)
@@ -36,20 +36,20 @@ This method aligns the two meshes and calculates the chamfer distance between th
 """
 
 
-- articulate_anything/detect_articulated_parts.py
+articulate_anything/detect_articulated_parts.py
 """
 This method takes as input a video demonstration of the target object and makes a VLM call to detect the individual parts of the object.
 The output is a formatted string of the detected parts in the input format of dino/SAM, such that it can directly be used for part segmentation.
 """
 
 
-- articulate_anything/mesh_seg_dino-x.py
+articulate_anything/mesh_seg_dino-x.py
 """
 This method takes as input the directory to rendered views of the target object and outputs segmentation masks, both as .png and as .json by calling the DINO-X API
 """
 
 
-- examples/articulate_test.ipynb
+examples/articulate_test.ipynb
 """
 This notebook sets up articulate-anything such that it works with generated object meshes.
 The helper functions are still WIP.
