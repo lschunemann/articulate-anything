@@ -164,16 +164,7 @@ def backproject_depth_blender_fixed(depth_map, K, R, t, max_depth=100.0):
 def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=None, flip_z=True):
     """
     Backproject depth values only for masked regions using the same approach as the working function.
-    
-    Args:
-        depth_map: Depth map from Blender
-        mask: Binary mask of regions to include
-        K: Intrinsic camera matrix
-        R: Rotation matrix (world to camera)
-        t: Camera position in world coordinates
-        max_depth: Maximum depth threshold
-        label: Optional label for the points
-        flip_z: Whether to flip the Z-coordinate (usually not needed if using the correct transformation)
+    Modified to handle empty arrays gracefully.
     """
     # Handle 3-channel depth maps
     if len(depth_map.shape) == 3:
@@ -208,11 +199,13 @@ def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=No
     y_coords = y_coords[valid]
     depth_values = depth_values[valid]
     
-    print(f"  After filtering: {len(depth_values)} valid points (range: {depth_values.min():.6f} to {depth_values.max():.6f})")
-    
+    # Check if we have any valid depth values after filtering
     if len(depth_values) == 0:
-        print(f"No valid depth values for {label if label else 'unknown'}")
+        print(f"  After filtering: No valid depth values (all values were out of range or invalid)")
         return np.array([])
+    
+    # If we have valid values, print their range
+    print(f"  After filtering: {len(depth_values)} valid points (range: {depth_values.min():.6f} to {depth_values.max():.6f})")
     
     # Convert pixel coordinates to camera coordinates
     fx = K[0, 0]
@@ -238,7 +231,6 @@ def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=No
     points_world = np.zeros_like(points_cam)
     for i, pt in enumerate(points_cam):
         points_world[i] = R_cam_to_world.dot(pt) + t
-
         
     return points_world
 
@@ -352,11 +344,21 @@ def visualize_point_cloud_with_cameras(points, labels, camera_params, title, out
     
     return fig, ax
 
+def sanitize_filename(filename):
+    """
+    Sanitize a filename by replacing invalid characters with underscores.
+    """
+    # Replace characters that are invalid in filenames
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', ' ']
+    for char in invalid_chars:
+        filename = filename.replace(char, '_')
+    return filename
+
 # Main function to lift 2D masks to 3D
 def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OBJECT, output_dir, flip_z=True):
     """
     Lift 2D segmentation masks to 3D points using depth maps and camera parameters.
-    Modified to preserve instance information by creating unique instance IDs.
+    Modified to handle missing segmentation results.
     """
     all_3d_points = []
     all_labels = []
@@ -372,87 +374,106 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
     for view_idx in range(len(rgb_images)):
         print(f"\nProcessing view {view_idx + 1}/{len(rgb_images)}")
         
-        # Load masks for this view
-        masks, label_names = load_masks_from_results(results_paths[view_idx], OBJECT)
-        
-        # Get camera parameters
-        K = camera_params[view_idx]['K']
-        R = camera_params[view_idx]['R']
-        t = camera_params[view_idx]['t']
-        
-        # Get depth map
-        depth_map = depth_maps[view_idx]
-        
-        # Print depth map stats
-        if len(depth_map.shape) == 3:
-            print(f"Depth map has shape {depth_map.shape} (3 channels), will use first channel")
-        else:
-            print(f"Depth map has shape {depth_map.shape}")
+        # Check if we have segmentation results for this view
+        if view_idx >= len(results_paths):
+            print(f"No segmentation results found for view {view_idx + 1}, skipping...")
+            continue
             
-        valid_mask = depth_map > 0
-        if np.any(valid_mask):
-            print(f"Depth range: {np.min(depth_map[valid_mask])} to {np.max(depth_map[valid_mask])}")
-        else:
-            print("Warning: No valid depth values found")
-        
-        view_points = []
-        view_labels = []
-        view_instance_ids = []  # Track instance IDs for this view
-        
-        # Process each mask (each mask is a separate instance)
-        for mask_idx, (mask, label_name) in enumerate(zip(masks, label_names)):
-            # Create a unique instance ID for this mask
-            if label_name not in label_instance_counters:
-                label_instance_counters[label_name] = 0
+        try:
+            # Load masks for this view
+            masks, label_names = load_masks_from_results(results_paths[view_idx], OBJECT)
+
+            label_names = [sanitize_filename(label) for label in label_names]
             
-            instance_id = f"{label_name}_{label_instance_counters[label_name]}"
-            label_instance_counters[label_name] += 1
-            
-            # Backproject points for this mask
-            points_3d = backproject_masked_depth(
-                depth_map, mask, K, R, t, max_depth=100.0, label=label_name, flip_z=flip_z
-            )
-            
-            if len(points_3d) == 0:
-                print(f"No valid 3D points for {label_name} (instance {instance_id})")
+            # Skip if no masks were found
+            if len(masks) == 0:
+                print(f"No masks found in results for view {view_idx + 1}, skipping...")
                 continue
                 
-            print(f"Generated {len(points_3d)} 3D points for {label_name} (instance {instance_id})")
-            view_points.append(points_3d)
-            view_labels.extend([label_name] * len(points_3d))
-            view_instance_ids.extend([instance_id] * len(points_3d))  # Add instance IDs
-
-        # Visualize points for this view if any were generated
-        if view_points:
-            view_points = np.vstack(view_points)
-            vis_path = os.path.join(output_dir, f'view_{view_idx}_points.png')
+            # Get camera parameters
+            K = camera_params[view_idx]['K']
+            R = camera_params[view_idx]['R']
+            t = camera_params[view_idx]['t']
             
-            # Create camera parameters for visualization
-            cam_params_dict = {'R': R, 't': t}
+            # Get depth map
+            depth_map = depth_maps[view_idx]
             
-            # Also flip z-coordinate of camera position for visualization if we're flipping points
-            if flip_z:
-                t_vis = t.copy()
-                t_vis[2] = -t_vis[2]
-                cam_params_vis = {'R': R, 't': t_vis}
+            # Print depth map stats
+            if len(depth_map.shape) == 3:
+                print(f"Depth map has shape {depth_map.shape} (3 channels), will use first channel")
             else:
-                cam_params_vis = cam_params_dict
+                print(f"Depth map has shape {depth_map.shape}")
                 
-            visualize_point_cloud_with_cameras(
-                view_points, np.array(view_instance_ids),  # Use instance IDs instead of labels
-                [cam_params_vis], 
-                f'View {view_idx} Point Cloud', 
-                vis_path
-            )
+            valid_mask = depth_map > 0
+            if np.any(valid_mask):
+                print(f"Depth range: {np.min(depth_map[valid_mask])} to {np.max(depth_map[valid_mask])}")
+            else:
+                print("Warning: No valid depth values found")
             
-            # Add to global collection
-            all_3d_points.append(view_points)
-            all_labels.extend(view_labels)
-            all_instance_ids.extend(view_instance_ids)  # Add instance IDs
+            view_points = []
+            view_labels = []
+            view_instance_ids = []  # Track instance IDs for this view
             
-            print(f"View {view_idx} processed with {len(view_points)} points")
-        else:
-            print(f"No valid points found in view {view_idx}")
+            # Process each mask (each mask is a separate instance)
+            for mask_idx, (mask, label_name) in enumerate(zip(masks, label_names)):
+                # Create a unique instance ID for this mask
+                if label_name not in label_instance_counters:
+                    label_instance_counters[label_name] = 0
+
+                sanitized_label = sanitize_filename(label_name)
+                instance_id = f"{sanitized_label}_{label_instance_counters[label_name]}"
+                label_instance_counters[label_name] += 1
+                
+                # Backproject points for this mask
+                points_3d = backproject_masked_depth(
+                    depth_map, mask, K, R, t, max_depth=100.0, label=label_name, flip_z=flip_z
+                )
+                
+                if len(points_3d) == 0:
+                    print(f"No valid 3D points for {label_name} (instance {instance_id})")
+                    continue
+                    
+                print(f"Generated {len(points_3d)} 3D points for {label_name} (instance {instance_id})")
+                view_points.append(points_3d)
+                view_labels.extend([label_name] * len(points_3d))
+                view_instance_ids.extend([instance_id] * len(points_3d))  # Add instance IDs
+
+            # Visualize points for this view if any were generated
+            if view_points:
+                view_points = np.vstack(view_points)
+                vis_path = os.path.join(output_dir, f'view_{view_idx}_points.png')
+                
+                # Create camera parameters for visualization
+                cam_params_dict = {'R': R, 't': t}
+                
+                # Also flip z-coordinate of camera position for visualization if we're flipping points
+                if flip_z:
+                    t_vis = t.copy()
+                    t_vis[2] = -t_vis[2]
+                    cam_params_vis = {'R': R, 't': t_vis}
+                else:
+                    cam_params_vis = cam_params_dict
+                    
+                visualize_point_cloud_with_cameras(
+                    view_points, np.array(view_instance_ids),  # Use instance IDs instead of labels
+                    [cam_params_vis], 
+                    f'View {view_idx} Point Cloud', 
+                    vis_path
+                )
+                
+                # Add to global collection
+                all_3d_points.append(view_points)
+                all_labels.extend(view_labels)
+                all_instance_ids.extend(view_instance_ids)  # Add instance IDs
+                
+                print(f"View {view_idx} processed with {len(view_points)} points")
+            else:
+                print(f"No valid points found in view {view_idx}")
+                
+        except Exception as e:
+            print(f"Error processing view {view_idx}: {str(e)}")
+            print("Skipping this view and continuing...")
+            continue
 
     # Process all views together
     if not all_3d_points:
@@ -488,25 +509,50 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
     return points_3d, labels, instance_ids  # Return instance IDs as well
 
 def load_masks_from_results(results_path, OBJECT):
-    """Load masks from the JSON results file"""
+    """Load masks from the JSON results file with better error handling"""
     print(f"Loading masks from {results_path}")
     
-    with open(os.path.join(f"/home/link/DreMa/third_party/articulate-anything/datasets/segmentation_masks/{OBJECT}", results_path), 'r') as f:
-        results = json.load(f)
-    
-    masks = []
-    labels = []
-    
-    for annotation in results['annotations']:
-        rle = annotation['segmentation']
-        rle['counts'] = rle['counts'].encode('utf-8')
-        mask = mask_util.decode(rle)
+    try:
+        full_path = os.path.join(f"/home/link/DreMa/third_party/articulate-anything/datasets/segmentation_masks/{OBJECT}", results_path)
         
-        masks.append(mask)
-        labels.append(annotation['class_name'])
-    
-    print(f"Loaded {len(masks)} masks with labels: {labels}")
-    return np.stack(masks), labels
+        # Check if file exists
+        if not os.path.exists(full_path):
+            print(f"Results file not found: {full_path}")
+            return np.array([]), []
+        
+        with open(full_path, 'r') as f:
+            results = json.load(f)
+        
+        # Check if results contain annotations
+        if 'annotations' not in results or not results['annotations']:
+            print(f"No annotations found in results file")
+            return np.array([]), []
+        
+        masks = []
+        labels = []
+        
+        for annotation in results['annotations']:
+            try:
+                rle = annotation['segmentation']
+                rle['counts'] = rle['counts'].encode('utf-8')
+                mask = mask_util.decode(rle)
+                
+                masks.append(mask)
+                labels.append(annotation['class_name'])
+            except Exception as e:
+                print(f"Error processing annotation: {str(e)}")
+                continue
+        
+        if not masks:
+            print(f"No valid masks could be decoded from results")
+            return np.array([]), []
+            
+        print(f"Loaded {len(masks)} masks with labels: {labels}")
+        return np.stack(masks), labels
+        
+    except Exception as e:
+        print(f"Error loading masks from {results_path}: {str(e)}")
+        return np.array([]), []
 
 def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_labels, unique_labels, 
                            distances, output_dir, OBJECT, views=4):
@@ -631,6 +677,8 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
             
             # Add legend
             ax.legend()
+
+            # label = sanitize_filename(label)
             
             # Save figure with label in the filename
             plt.savefig(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 
@@ -638,153 +686,111 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
             plt.close()
     
     # Create mesh visualization with vertex colors for each label
-    # Create mesh visualization with vertex colors for each label
     for label in unique_labels:
         # Create a colored mesh with this label highlighted
-        colors = np.zeros((len(mesh.vertices), 4))  # RGBA
-        
-        # Set alpha based on label
+        # Get masks for different label categories
         mask_label = np.array(vertex_labels) == label
         mask_other = (np.array(vertex_labels) != label) & (np.array(vertex_labels) != "unassigned")  # Other labels except unassigned
         mask_unassigned = np.array(vertex_labels) == "unassigned"
         
-        # Highlighted label (fully opaque)
-        colors[mask_label, :3] = label_colors[label]
-        colors[mask_label, 3] = 1.0
-        
-        # Other labels (semi-transparent)
-        for other_label in unique_labels:
-            if other_label == label:
-                continue
-            mask = np.array(vertex_labels) == other_label
-            colors[mask, :3] = label_colors[other_label]
-        colors[mask_other, 3] = 0.2
-        
-        # Unassigned (less visible)
-        colors[mask_unassigned, :3] = label_colors["unassigned"]
-        colors[mask_unassigned, 3] = 0.1
-        
-        # Create visualization using trimesh
-        colored_mesh = trimesh.Trimesh(
-            vertices=mesh.vertices,
-            faces=mesh.faces,
-            vertex_colors=colors
-        )
-        
-        # Save as PNG using consistent camera settings
-        scene = trimesh.Scene(colored_mesh)
-        
-        # Calculate scene bounds to set consistent camera distance
-        bounds = scene.bounds
-        extents = bounds[1] - bounds[0]
-        scene_center = (bounds[1] + bounds[0]) / 2.0
-        scene_scale = np.max(extents)
-        
+        # For each view angle
         for view_idx, (elev, azim) in enumerate(view_angles):
-            # Convert to radians
-            rot_z = azim * np.pi / 180
-            rot_x = elev * np.pi / 180
+            # Skip the trimesh visualization attempt and go straight to matplotlib
+            fig = plt.figure(figsize=(12, 10))
+            ax = fig.add_subplot(111, projection='3d')
             
-            # Create a camera transform matrix
-            camera_transform = np.eye(4)
+            # Plot mesh vertices with colors
+            vertices = mesh.vertices
             
-            # Apply rotation around scene center
-            rotation = trimesh.transformations.euler_matrix(rot_x, 0, rot_z, 'sxyz')
-            camera_transform = np.dot(camera_transform, rotation)
+            # Create a colormap for visualization
+            vertex_colors = np.zeros((len(vertices), 3))
+            vertex_colors[mask_label] = label_colors[label]
+            vertex_colors[mask_other] = [0.8, 0.8, 0.8]  # Light gray for other labels
+            vertex_colors[mask_unassigned] = [0.9, 0.9, 0.9]  # Very light gray for unassigned
             
-            # Position camera at a consistent distance
-            camera_distance = scene_scale * 2.0  # Adjust this multiplier as needed
-            camera_pos = np.array([0, 0, camera_distance])
-            camera_pos = np.dot(rotation[:3, :3], camera_pos)
-            camera_transform[:3, 3] = scene_center + camera_pos
+            # Plot a subset of vertices
+            sample_rate = max(1, len(vertices) // 10000)
+            sampled_indices = np.arange(0, len(vertices), sample_rate)
             
-            # Look at scene center
-            # Create a look_at transformation manually since trimesh.transformations doesn't have look_at
-            camera_pos = camera_transform[:3, 3]  # Camera position
-            forward = scene_center - camera_pos  # Direction to look at
-            forward = forward / np.linalg.norm(forward)  # Normalize
-
-            # Define camera orientation
-            # Use world up vector [0, 0, 1] as reference
-            up = np.array([0, 0, 1])
-            right = np.cross(forward, up)
-            right = right / np.linalg.norm(right)  # Normalize
-            up = np.cross(right, forward)  # Recompute up to ensure orthogonality
-
-            # Create rotation matrix (right, up, -forward) as columns
-            rotation = np.column_stack([right, up, -forward])
-            camera_transform[:3, :3] = rotation
-            
-            # Set camera transform
-            scene.camera_transform = camera_transform
-            
-            try:
-                # Set camera parameters for consistent view
-                scene.camera.fov = [60, 60]  # Field of view
+            # Plot highlighted label with higher visibility
+            if np.any(mask_label):
+                highlighted_vertices = vertices[mask_label]
+                # Subsample if there are too many points
+                if len(highlighted_vertices) > 5000:
+                    indices = np.random.choice(len(highlighted_vertices), 5000, replace=False)
+                    highlighted_vertices = highlighted_vertices[indices]
                 
-                # Render the image
-                png = scene.save_image(
-                    resolution=[1200, 1000], 
-                    visible=True,
-                    background=[255, 255, 255, 255]  # White background
+                ax.scatter(
+                    highlighted_vertices[:, 0],
+                    highlighted_vertices[:, 1],
+                    highlighted_vertices[:, 2],
+                    c=[label_colors[label]],
+                    marker='.',
+                    s=15,  # Larger size for highlighted label
+                    alpha=1.0,  # Full opacity
+                    label=f'Label {label}'
                 )
+            
+            # Plot other labels with less visibility
+            if np.any(mask_other):
+                # Sample other vertices
+                other_indices = sampled_indices[mask_other[sampled_indices]]
+                if len(other_indices) > 3000:
+                    other_indices = np.random.choice(other_indices, 3000, replace=False)
                 
-                with open(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 'wb') as f:
-                    f.write(png)
-                    
-                print(f"  Saved mesh visualization for label {label}, view {view_idx+1}")
-                    
-            except Exception as e:
-                print(f"Error saving mesh image for label {label}, view {view_idx+1}: {e}")
+                ax.scatter(
+                    vertices[other_indices, 0],
+                    vertices[other_indices, 1],
+                    vertices[other_indices, 2],
+                    c=[0.8, 0.8, 0.8],  # Light gray
+                    marker='.',
+                    s=5,  # Smaller size
+                    alpha=0.3,  # More transparent
+                    label='Other labels'
+                )
+            
+            # Plot unassigned with least visibility
+            if np.any(mask_unassigned):
+                # Sample unassigned vertices
+                unassigned_indices = sampled_indices[mask_unassigned[sampled_indices]]
+                if len(unassigned_indices) > 2000:
+                    unassigned_indices = np.random.choice(unassigned_indices, 2000, replace=False)
                 
-                # Fallback to matplotlib visualization if trimesh fails
-                try:
-                    fig = plt.figure(figsize=(12, 10))
-                    ax = fig.add_subplot(111, projection='3d')
-                    
-                    # Plot mesh vertices with colors
-                    vertices = mesh.vertices
-                    
-                    # Create a colormap for visualization
-                    vertex_colors = np.zeros((len(vertices), 3))
-                    vertex_colors[mask_label] = label_colors[label]
-                    vertex_colors[mask_other] = [0.8, 0.8, 0.8]  # Light gray for other labels
-                    vertex_colors[mask_unassigned] = [0.9, 0.9, 0.9]  # Very light gray for unassigned
-                    
-                    # Plot a subset of vertices
-                    sample_rate = max(1, len(vertices) // 10000)
-                    sampled_indices = np.arange(0, len(vertices), sample_rate)
-                    
-                    ax.scatter(
-                        vertices[sampled_indices, 0],
-                        vertices[sampled_indices, 1],
-                        vertices[sampled_indices, 2],
-                        c=vertex_colors[sampled_indices],
-                        marker='.',
-                        s=10,
-                        alpha=0.8
-                    )
-                    
-                    # Set view angle
-                    ax.view_init(elev=elev, azim=azim)
-                    
-                    # Set consistent view limits
-                    ax.set_xlim([center[0] - max_range/2, center[0] + max_range/2])
-                    ax.set_ylim([center[1] - max_range/2, center[1] + max_range/2])
-                    ax.set_zlim([center[2] - max_range/2, center[2] + max_range/2])
-                    
-                    # Add title
-                    ax.set_title(f'Mesh Label {label} - View {view_idx+1} (Fallback)')
-                    
-                    # Save figure
-                    plt.savefig(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}_fallback.png'), 
-                            dpi=300, bbox_inches='tight')
-                    plt.close()
-                    
-                    print(f"  Saved fallback visualization for label {label}, view {view_idx+1}")
-                    
-                except Exception as e2:
-                    print(f"  Fallback visualization also failed: {e2}")
+                ax.scatter(
+                    vertices[unassigned_indices, 0],
+                    vertices[unassigned_indices, 1],
+                    vertices[unassigned_indices, 2],
+                    c=[0.9, 0.9, 0.9],  # Very light gray
+                    marker='.',
+                    s=3,  # Smallest size
+                    alpha=0.2,  # Most transparent
+                    label='Unassigned'
+                )
+            
+            # Set view angle
+            ax.view_init(elev=elev, azim=azim)
+            
+            # Set consistent view limits
+            ax.set_xlim([center[0] - max_range/2, center[0] + max_range/2])
+            ax.set_ylim([center[1] - max_range/2, center[1] + max_range/2])
+            ax.set_zlim([center[2] - max_range/2, center[2] + max_range/2])
+            
+            # Add title and labels
+            ax.set_title(f'Mesh Label {label} - View {view_idx+1}')
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            
+            # Add legend
+            if np.any(mask_label) or np.any(mask_other) or np.any(mask_unassigned):
+                ax.legend()
+            
+            # Save figure
+            plt.savefig(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 
+                    dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"  Saved visualization for label {label}, view {view_idx+1}")
     
     print(f"Saved visualization images to: {output_dir}")
     print("Generated images:")
