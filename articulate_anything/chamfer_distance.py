@@ -6,31 +6,76 @@ from scipy.optimize import minimize
 import argparse
 import json
 
-def load_mesh(file_path):
-    """Load a mesh from .obj or .glb file."""
+def load_mesh(file_path, debug=True):
+    """Load a mesh from .obj or .glb file with improved OBJ handling."""
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
     
-    loaded = trimesh.load(file_path)
+    if debug:
+        print(f"Loading mesh from {file_path}...")
     
-    # Check if the loaded object is a Scene
-    if isinstance(loaded, trimesh.Scene):
-        # Extract all meshes from the scene
-        meshes = []
-        for geometry in loaded.geometry.values():
-            if isinstance(geometry, trimesh.Trimesh):
-                meshes.append(geometry)
-        
-        # If there are multiple meshes, combine them into one
-        if len(meshes) > 1:
-            mesh = trimesh.util.concatenate(meshes)
-        elif len(meshes) == 1:
-            mesh = meshes[0]
-        else:
-            raise ValueError(f"No valid meshes found in {file_path}")
+    # Special handling for OBJ files
+    if file_path.lower().endswith('.obj'):
+        try:
+            # Try loading with process=True and maintain_order=True
+            mesh = trimesh.load_mesh(file_path, process=True, force='mesh', maintain_order=True)
+            
+            if debug:
+                print(f"Initial load: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+            
+            # Check if the mesh has valid faces
+            if len(mesh.faces) == 0:
+                print(f"Warning: No faces found in {file_path}, trying alternative loading method")
+                # Try alternative loading method
+                mesh = trimesh.exchange.load.load(file_path, file_type='obj')
+                
+                if debug:
+                    print(f"Alternative load: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+                    
+        except Exception as e:
+            print(f"Error loading OBJ file: {e}")
+            # Try alternative loading method with explicit OBJ loader
+            try:
+                mesh = trimesh.exchange.load.load(file_path, file_type='obj')
+                if debug:
+                    print(f"Fallback load: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+            except Exception as e2:
+                raise ValueError(f"Failed to load {file_path}: {e2}")
     else:
-        # If it's already a Trimesh object
-        mesh = loaded
+        # Handle GLB and other formats
+        try:
+            loaded = trimesh.load(file_path)
+            
+            # Check if the loaded object is a Scene
+            if isinstance(loaded, trimesh.Scene):
+                # Extract all meshes from the scene
+                meshes = []
+                for geometry in loaded.geometry.values():
+                    if isinstance(geometry, trimesh.Trimesh):
+                        meshes.append(geometry)
+                
+                # If there are multiple meshes, combine them into one
+                if len(meshes) > 1:
+                    mesh = trimesh.util.concatenate(meshes)
+                    if debug:
+                        print(f"Combined {len(meshes)} meshes from scene")
+                elif len(meshes) == 1:
+                    mesh = meshes[0]
+                else:
+                    raise ValueError(f"No valid meshes found in {file_path}")
+            else:
+                # If it's already a Trimesh object
+                mesh = loaded
+        except Exception as e:
+            raise ValueError(f"Failed to load {file_path}: {e}")
+    
+    # Verify the mesh has vertices
+    if len(mesh.vertices) == 0:
+        raise ValueError(f"Loaded mesh from {file_path} has no vertices")
+        
+    if debug:
+        print(f"Successfully loaded mesh from {file_path} with {len(mesh.vertices)} vertices and {len(mesh.faces)} faces")
+        print(f"Mesh bounds: {mesh.bounds}")
     
     return mesh
 
@@ -217,9 +262,34 @@ def main(gt_file, generated_file):
     source_mesh = load_mesh(gt_file)
     target_mesh = load_mesh(generated_file)
     
-    # Normalize meshes to have similar scale
-    source_mesh.vertices -= source_mesh.center_mass
-    target_mesh.vertices -= target_mesh.center_mass
+    # if there aren't enough vertices from the .obj file, sample from surface
+    if len(source_mesh.faces) > 0:
+        # Sample 10,000 points evenly distributed across the mesh surface
+        source_points = source_mesh.sample(len(target_mesh.vertices))
+        print(f"Sampled {len(source_points)} points from source mesh with {len(source_mesh.vertices)} vertices and {len(source_mesh.faces)} faces")
+        source_mesh.vertices = source_points
+
+    # TODO: for now manually fit meshes
+    # 1. Apply 90-degree rotation around x-axis (π radians)
+    matrix = np.eye(4)
+    rx = np.pi  # 90 degrees in radians
+    rotation_x = trimesh.transformations.rotation_matrix(rx, [1, 0, 0])
+    matrix = np.dot(matrix, rotation_x)
+    
+    # Apply the transformation
+    target_mesh.apply_transform(matrix)
+
+    # 1. Apply 180-degree rotation around z-axis (π radians)
+    matrix = np.eye(4)
+    rz = np.pi  # 180 degrees in radians
+    rotation_z = trimesh.transformations.rotation_matrix(rz, [0, 0, 1])
+    matrix = np.dot(matrix, rotation_z)
+    
+    # Apply the transformation
+    source_mesh.apply_transform(matrix)
+    # # Normalize meshes to have similar scale
+    # source_mesh.vertices -= source_mesh.center_mass
+    # target_mesh.vertices -= target_mesh.center_mass
     
     # Align meshes
     print("Aligning meshes...")

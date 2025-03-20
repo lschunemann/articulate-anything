@@ -73,6 +73,7 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     # Create the necessary directory structure
     import os, shutil
     import logging
+    import re
 
     segmented_mesh_dir = os.path.join(segmented_mesh_dir, "output")
     
@@ -94,46 +95,68 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     if not mesh_files:
         raise ValueError(f"No mesh files found in {segmented_mesh_dir}")
     
-    # Copy mesh files to the dataset directory first
-    for mesh_file in mesh_files:
-        src_path = join_path(segmented_mesh_dir, mesh_file)
-        dst_path = join_path(obj_dataset_dir, mesh_file)
-        shutil.copy(src_path, dst_path)
+    # Use VLM to identify which part should be the base
+    base_part_name = identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg)
     
-    # Use the first mesh as the root link
-    root_mesh = mesh_files[0]
-    root_link_name = os.path.splitext(root_mesh)[0]
+    # Clean up link names to avoid spaces and special characters
+    link_names = []
+    base_index = None
+    
+    for i, mesh_file in enumerate(mesh_files):
+        original_name = os.path.splitext(mesh_file)[0]
+        # Replace spaces and special characters with underscores
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '_', original_name)
+        
+        # Check if this is the base part
+        if original_name == base_part_name:
+            link_names.append("base")
+            base_index = i
+        else:
+            link_names.append(clean_name)
+    
+    # If no base was found, use the first part as base
+    if base_index is None:
+        logging.warning("No base part identified by VLM, using first part as base")
+        link_names[0] = "base"
+        base_index = 0
+    
+    # Copy mesh files to the dataset directory with new names
+    for i, mesh_file in enumerate(mesh_files):
+        src_path = join_path(segmented_mesh_dir, mesh_file)
+        new_filename = f"{link_names[i]}{os.path.splitext(mesh_file)[1]}"
+        dst_path = join_path(obj_dataset_dir, new_filename)
+        shutil.copy(src_path, dst_path)
     
     # Create a URDF file for the object
     urdf_content = f"""<?xml version="1.0" ?>
 <robot name="{selected_obj_id}">
-  <link name="{root_link_name}">
+  <link name="base">
     <inertial>
       <mass value="1.0"/>
       <inertia ixx="1.0" ixy="0.0" ixz="0.0" iyy="1.0" iyz="0.0" izz="1.0"/>
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="{root_mesh}" scale="1 1 1"/>
+        <mesh filename="base{os.path.splitext(mesh_files[base_index])[1]}" scale="1 1 1"/>
       </geometry>
-      <material name="material_{root_link_name}">
+      <material name="material_base">
         <color rgba="0.8 0.8 0.8 1.0"/>
       </material>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="{root_mesh}" scale="1 1 1"/>
+        <mesh filename="base{os.path.splitext(mesh_files[base_index])[1]}" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
 """
     
-    # Add additional links for each mesh file (except the root)
+    # Add additional links for each mesh file (except the base)
     for i, mesh_file in enumerate(mesh_files):
-        if i == 0:  # Skip root, already added
+        if i == base_index:  # Skip base, already added
             continue
             
-        part_name = os.path.splitext(mesh_file)[0]
+        part_name = link_names[i]
         urdf_content += f"""
   <link name="{part_name}">
     <inertial>
@@ -142,7 +165,7 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="{mesh_file}" scale="1 1 1"/>
+        <mesh filename="{part_name}{os.path.splitext(mesh_file)[1]}" scale="1 1 1"/>
       </geometry>
       <material name="material_{part_name}">
         <color rgba="0.8 0.8 0.8 1.0"/>
@@ -150,12 +173,12 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     </visual>
     <collision>
       <geometry>
-        <mesh filename="{mesh_file}" scale="1 1 1"/>
+        <mesh filename="{part_name}{os.path.splitext(mesh_file)[1]}" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
-  <joint name="{root_link_name}_to_{part_name}" type="fixed">
-    <parent link="{root_link_name}"/>
+  <joint name="base_to_{part_name}" type="fixed">
+    <parent link="base"/>
     <child link="{part_name}"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
@@ -170,13 +193,12 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     
     logging.info(f"Created URDF file at {urdf_file}")
     
-    # Create a link summary file - using actual part names
-    link_summary = f"object_id: {selected_obj_id}\n    Robot Link Summary:\n    - {root_link_name}\n"
+    # Create a link summary file - using cleaned part names
+    link_summary = f"object_id: {selected_obj_id}\n    Robot Link Summary:\n    - base\n"
     
     # Add other parts to the link summary
-    for i, mesh_file in enumerate(mesh_files):
-        if i > 0:  # Skip the root
-            part_name = os.path.splitext(mesh_file)[0]
+    for i, part_name in enumerate(link_names):
+        if part_name != "base":  # Skip the base
             link_summary += f"    - {part_name}\n"
     
     # Save the link summary
@@ -185,32 +207,26 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
         f.write(link_summary)
     
     logging.info(f"Created link summary at {link_summary_path}")
-
+    
     # Create semantics.txt file
-    # This file maps link names to joint types and semantic categories
     # Format: link_name joint_type semantic_label
     semantics_content = ""
-    for i, mesh_file in enumerate(mesh_files):
-        part_name = os.path.splitext(mesh_file)[0]
-        # Replace any spaces in part names with underscores
-        part_name = part_name.replace(" ", "_")
+    for part_name in link_names:
         # Use "fixed" as the joint type for all parts
         joint_type = "fixed"
         # Use the part name as the semantic category
         semantic_label = part_name
         semantics_content += f"{part_name} {joint_type} {semantic_label}\n"
-
+    
     semantics_path = join_path(obj_dataset_dir, "semantics.txt")
     with open(semantics_path, "w") as f:
         f.write(semantics_content)
-
+    
     logging.info(f"Created semantics file at {semantics_path}")
-
     
     # Render frontview using Open3D
     frontview_path = join_path(obj_dataset_dir, "robot_frontview.png")
     render_frontview_with_open3d(segmented_mesh_dir, frontview_path)
-    # frontview_path = "/home/link/DreMa/third_party/articulate-anything/datasets/output_views/drawer_multi-view/render_drawer_multi-view_6_0031.png"
     
     # Copy the frontview image to the output directory as well
     output_frontview_path = join_path(obj_output_dir, "robot_frontview.png")
@@ -223,6 +239,188 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     cfg.prompt = selected_obj_id
     
     return cfg
+
+def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
+    """Use OpenAI API to identify which part should be the base."""
+    import trimesh
+    import numpy as np
+    from PIL import Image
+    import os
+    import logging
+    import base64
+    import io
+    import openai
+    import json
+    
+    logging.info("Identifying base part using OpenAI API...")
+    
+    # Render individual parts using trimesh (works in headless environments)
+    part_images = {}
+    for mesh_file in mesh_files:
+        part_name = os.path.splitext(mesh_file)[0]
+        mesh_path = os.path.join(segmented_mesh_dir, mesh_file)
+        
+        try:
+            # Load mesh with trimesh
+            mesh = trimesh.load(mesh_path)
+            
+            # Create a scene with the mesh
+            scene = trimesh.Scene(mesh)
+            
+            # Get a camera view
+            camera_angles = [(0, 0, 0), (np.pi/4, 0, 0), (0, np.pi/4, 0)]
+            
+            for i, angles in enumerate(camera_angles):
+                # Create a camera transform matrix
+                camera_transform = trimesh.transformations.rotation_matrix(
+                    angles[0], [1, 0, 0], scene.centroid)
+                camera_transform = trimesh.transformations.rotation_matrix(
+                    angles[1], [0, 1, 0], scene.centroid, camera_transform)
+                camera_transform = trimesh.transformations.rotation_matrix(
+                    angles[2], [0, 0, 1], scene.centroid, camera_transform)
+                
+                # Move the camera away from the object
+                camera_transform[0:3, 3] = camera_transform[0:3, 3] + np.array([0, 0, 2.0]) * mesh.scale
+                
+                # Render the mesh
+                try:
+                    rendered = scene.save_image(resolution=[400, 400], 
+                                               transform=camera_transform,
+                                               visible=True)
+                    
+                    # Convert to PIL Image
+                    img = Image.open(io.BytesIO(rendered))
+                    
+                    # Save the image
+                    temp_img_path = os.path.join(segmented_mesh_dir, f"{part_name}_view_{i}.png")
+                    img.save(temp_img_path)
+                    
+                    # Add to part_images
+                    if part_name not in part_images:
+                        part_images[part_name] = []
+                    part_images[part_name].append(temp_img_path)
+                    
+                    logging.info(f"Rendered part: {part_name}, view {i}")
+                except Exception as e:
+                    logging.warning(f"Could not render view {i} of part {part_name}: {str(e)}")
+        
+        except Exception as e:
+            logging.warning(f"Could not load part {part_name}: {str(e)}")
+    
+    if not part_images:
+        raise ValueError("Failed to render any parts for analysis")
+    
+    # Prepare images for API call
+    image_messages = []
+    for part_name, img_paths in part_images.items():
+        # Add part name
+        image_messages.append({
+            "type": "text",
+            "text": f"Part: {part_name}"
+        })
+        
+        # Add images for this part
+        for img_path in img_paths:
+            # Convert image to base64
+            with open(img_path, "rb") as img_file:
+                encoded_image = base64.b64encode(img_file.read()).decode('utf-8')
+                
+            # Add to messages
+            image_messages.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{encoded_image}",
+                    "detail": "low"
+                }
+            })
+    
+    # Create the prompt
+    prompt = """
+    I have parts of an object. You MUST identify which part is the base or main body of the object.
+    The base is typically:
+    1. The largest or most substantial part
+    2. The part that supports other components
+    3. The part that would naturally be at the bottom when the object is in use
+    4. The part that other components would be attached to
+    
+    Look at each part image and tell me which one is DEFINITELY the base.
+    You MUST choose exactly one part as the base, even if you're uncertain.
+    This is critical for the object assembly process to work correctly.
+    
+    IMPORTANT: Your response must be in JSON format with a single field "base_part" containing the name of the part you've selected as the base.
+    Example response: {"base_part": "part_name_here"}
+    """
+    
+    # Prepare the API call
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant that analyzes 3D object parts and identifies which part should be the base."},
+        {"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}
+    ]
+    
+    # Make the API call
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = openai.ChatCompletion.create(
+                model="claude-3-5-sonnet-latest",
+                messages=messages,
+                max_tokens=300,
+                temperature=0.2,
+                api_key=os.environ.get("API_KEY"),
+                base_url="https://ai-gateway.mytkhgroup.com/"
+            )
+            
+            # Extract the response
+            response_text = response.choices[0].message.content
+            
+            # Try to parse JSON from the response
+            try:
+                # Find JSON in the response
+                import re
+                json_match = re.search(r'({.*?})', response_text.replace('\n', ''))
+                if json_match:
+                    json_str = json_match.group(1)
+                    result = json.loads(json_str)
+                    
+                    base_part = result.get("base_part")
+                    if base_part and base_part in part_images:
+                        logging.info(f"API identified base part: {base_part}")
+                        
+                        # Clean up temporary images
+                        for part_name, img_paths in part_images.items():
+                            for img_path in img_paths:
+                                if os.path.exists(img_path):
+                                    os.remove(img_path)
+                        
+                        return base_part
+                
+                # If we couldn't parse JSON or the base_part wasn't valid
+                logging.warning(f"Could not extract valid base part from API response: {response_text}")
+            except json.JSONDecodeError:
+                logging.warning(f"Could not parse JSON from API response: {response_text}")
+            
+            # If we get here, try again with a more forceful prompt
+            prompt = f"""
+            CRITICAL: You MUST select exactly one part as the base from the following options: {', '.join(part_images.keys())}
+            
+            The base is the main supporting structure of the object. It's usually:
+            - The largest part
+            - The part at the bottom
+            - The part that other components attach to
+            
+            This is a forced choice situation. You MUST select ONE part as the base.
+            Your response MUST be in valid JSON format: {{"base_part": "part_name_here"}}
+            """
+            
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that analyzes 3D object parts and identifies which part should be the base."},
+                {"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}
+            ]
+        except Exception as e:
+            logging.warning(f"API call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
+    
+    # If we've exhausted all retries and still don't have a base part, raise an error
+    raise ValueError(f"Failed to identify a base part after {max_retries} attempts. Cannot proceed without a definitive base selection.")
 
 def render_frontview_with_open3d(mesh_dir, output_path):
     """Render a frontview of the object using Open3D."""

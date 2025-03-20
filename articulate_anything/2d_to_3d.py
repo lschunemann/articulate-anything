@@ -638,6 +638,7 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
             plt.close()
     
     # Create mesh visualization with vertex colors for each label
+    # Create mesh visualization with vertex colors for each label
     for label in unique_labels:
         # Create a colored mesh with this label highlighted
         colors = np.zeros((len(mesh.vertices), 4))  # RGBA
@@ -670,25 +671,120 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
             vertex_colors=colors
         )
         
-        # Save as PNG
+        # Save as PNG using consistent camera settings
         scene = trimesh.Scene(colored_mesh)
+        
+        # Calculate scene bounds to set consistent camera distance
+        bounds = scene.bounds
+        extents = bounds[1] - bounds[0]
+        scene_center = (bounds[1] + bounds[0]) / 2.0
+        scene_scale = np.max(extents)
+        
         for view_idx, (elev, azim) in enumerate(view_angles):
             # Convert to radians
             rot_z = azim * np.pi / 180
             rot_x = elev * np.pi / 180
             
-            # Apply rotation
-            matrix = np.eye(4)
-            matrix[:3, :3] = trimesh.transformations.euler_matrix(rot_x, 0, rot_z, 'sxyz')[:3, :3]
-            scene.camera_transform = matrix
+            # Create a camera transform matrix
+            camera_transform = np.eye(4)
+            
+            # Apply rotation around scene center
+            rotation = trimesh.transformations.euler_matrix(rot_x, 0, rot_z, 'sxyz')
+            camera_transform = np.dot(camera_transform, rotation)
+            
+            # Position camera at a consistent distance
+            camera_distance = scene_scale * 2.0  # Adjust this multiplier as needed
+            camera_pos = np.array([0, 0, camera_distance])
+            camera_pos = np.dot(rotation[:3, :3], camera_pos)
+            camera_transform[:3, 3] = scene_center + camera_pos
+            
+            # Look at scene center
+            # Create a look_at transformation manually since trimesh.transformations doesn't have look_at
+            camera_pos = camera_transform[:3, 3]  # Camera position
+            forward = scene_center - camera_pos  # Direction to look at
+            forward = forward / np.linalg.norm(forward)  # Normalize
+
+            # Define camera orientation
+            # Use world up vector [0, 0, 1] as reference
+            up = np.array([0, 0, 1])
+            right = np.cross(forward, up)
+            right = right / np.linalg.norm(right)  # Normalize
+            up = np.cross(right, forward)  # Recompute up to ensure orthogonality
+
+            # Create rotation matrix (right, up, -forward) as columns
+            rotation = np.column_stack([right, up, -forward])
+            camera_transform[:3, :3] = rotation
+            
+            # Set camera transform
+            scene.camera_transform = camera_transform
             
             try:
-                png = scene.save_image(resolution=[1200, 1000], visible=True)
-                # TODO: fix visualization
-                # with open(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 'wb') as f:
-                #     f.write(png)
+                # Set camera parameters for consistent view
+                scene.camera.fov = [60, 60]  # Field of view
+                
+                # Render the image
+                png = scene.save_image(
+                    resolution=[1200, 1000], 
+                    visible=True,
+                    background=[255, 255, 255, 255]  # White background
+                )
+                
+                with open(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 'wb') as f:
+                    f.write(png)
+                    
+                print(f"  Saved mesh visualization for label {label}, view {view_idx+1}")
+                    
             except Exception as e:
-                print(f"Error saving mesh image: {e}")
+                print(f"Error saving mesh image for label {label}, view {view_idx+1}: {e}")
+                
+                # Fallback to matplotlib visualization if trimesh fails
+                try:
+                    fig = plt.figure(figsize=(12, 10))
+                    ax = fig.add_subplot(111, projection='3d')
+                    
+                    # Plot mesh vertices with colors
+                    vertices = mesh.vertices
+                    
+                    # Create a colormap for visualization
+                    vertex_colors = np.zeros((len(vertices), 3))
+                    vertex_colors[mask_label] = label_colors[label]
+                    vertex_colors[mask_other] = [0.8, 0.8, 0.8]  # Light gray for other labels
+                    vertex_colors[mask_unassigned] = [0.9, 0.9, 0.9]  # Very light gray for unassigned
+                    
+                    # Plot a subset of vertices
+                    sample_rate = max(1, len(vertices) // 10000)
+                    sampled_indices = np.arange(0, len(vertices), sample_rate)
+                    
+                    ax.scatter(
+                        vertices[sampled_indices, 0],
+                        vertices[sampled_indices, 1],
+                        vertices[sampled_indices, 2],
+                        c=vertex_colors[sampled_indices],
+                        marker='.',
+                        s=10,
+                        alpha=0.8
+                    )
+                    
+                    # Set view angle
+                    ax.view_init(elev=elev, azim=azim)
+                    
+                    # Set consistent view limits
+                    ax.set_xlim([center[0] - max_range/2, center[0] + max_range/2])
+                    ax.set_ylim([center[1] - max_range/2, center[1] + max_range/2])
+                    ax.set_zlim([center[2] - max_range/2, center[2] + max_range/2])
+                    
+                    # Add title
+                    ax.set_title(f'Mesh Label {label} - View {view_idx+1} (Fallback)')
+                    
+                    # Save figure
+                    plt.savefig(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}_fallback.png'), 
+                            dpi=300, bbox_inches='tight')
+                    plt.close()
+                    
+                    print(f"  Saved fallback visualization for label {label}, view {view_idx+1}")
+                    
+                except Exception as e2:
+                    print(f"  Fallback visualization also failed: {e2}")
     
     print(f"Saved visualization images to: {output_dir}")
     print("Generated images:")
@@ -699,6 +795,99 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
     print(f"  {OBJECT}_color_legend.png")
     for view_idx in range(len(view_angles)):
         print(f"  {OBJECT}_view_{view_idx+1}.png")
+
+    
+def merge_instances_with_geometric_consistency(point_clouds_by_instance, instance_ids, distance_threshold=0.05, consistency_threshold=0.8):
+    """
+    Merge instances using geometric consistency checking.
+    
+    Args:
+        point_clouds_by_instance: Dictionary mapping instance IDs to point clouds
+        instance_ids: List of all instance IDs
+        distance_threshold: Distance threshold for point matching
+        consistency_threshold: Ratio of consistent matches required
+        
+    Returns:
+        Dictionary mapping original instance IDs to merged instance IDs
+    """
+    from scipy.spatial import cKDTree
+    import numpy as np
+    
+    # Function to check geometric consistency between two point clouds
+    def check_geometric_consistency(pc1, pc2, distance_threshold):
+        # Build KD-trees
+        tree1 = cKDTree(pc1)
+        tree2 = cKDTree(pc2)
+        
+        # Find nearest neighbors in both directions
+        dist1, idx1 = tree1.query(pc2, distance_upper_bound=distance_threshold)
+        dist2, idx2 = tree2.query(pc1, distance_upper_bound=distance_threshold)
+        
+        # Count valid matches (within threshold)
+        valid_matches1 = np.sum(np.isfinite(dist1))
+        valid_matches2 = np.sum(np.isfinite(dist2))
+        
+        # Check consistency ratio
+        consistency_ratio1 = valid_matches1 / len(pc2) if len(pc2) > 0 else 0
+        consistency_ratio2 = valid_matches2 / len(pc1) if len(pc1) > 0 else 0
+        
+        # Use the minimum ratio as the consistency score
+        consistency_score = min(consistency_ratio1, consistency_ratio2)
+        
+        return consistency_score
+    
+    # Initialize clusters
+    clusters = []
+    instance_to_cluster = {}
+    
+    # Process each instance
+    for i, instance_id in enumerate(instance_ids):
+        pc_i = point_clouds_by_instance[instance_id]
+        
+        # Skip if no points
+        if len(pc_i) == 0:
+            instance_to_cluster[instance_id] = None
+            continue
+        
+        # Check if this instance is similar to any existing cluster
+        assigned = False
+        for cluster_idx, cluster_instances in enumerate(clusters):
+            # Compare with all instances in the cluster
+            consistency_scores = []
+            
+            for cluster_instance_id in cluster_instances:
+                pc_j = point_clouds_by_instance[cluster_instance_id]
+                score = check_geometric_consistency(pc_i, pc_j, distance_threshold)
+                consistency_scores.append(score)
+            
+            # Use average consistency score
+            avg_score = np.mean(consistency_scores)
+            
+            if avg_score > consistency_threshold:
+                # Add to existing cluster
+                clusters[cluster_idx].append(instance_id)
+                instance_to_cluster[instance_id] = cluster_idx
+                assigned = True
+                print(f"Instance {instance_id} merged into cluster {cluster_idx} (score={avg_score:.4f})")
+                break
+        
+        if not assigned:
+            # Create new cluster
+            cluster_idx = len(clusters)
+            clusters.append([instance_id])
+            instance_to_cluster[instance_id] = cluster_idx
+            print(f"Instance {instance_id} creates new cluster {cluster_idx}")
+    
+    print(f"Merged {len(instance_ids)} instances into {len(clusters)} unique parts")
+    
+    # Create mapping from original instance IDs to representative instance IDs
+    instance_mapping = {}
+    for cluster_idx, cluster_instances in enumerate(clusters):
+        representative_id = cluster_instances[0]
+        for instance_id in cluster_instances:
+            instance_mapping[instance_id] = representative_id
+    
+    return instance_mapping, clusters
 
 
 def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, output_dir, OBJECT, flip_mesh_z=False):
@@ -1735,12 +1924,10 @@ def main(OBJECT, flip_z=True):
         return
         
     scene = trimesh.load(mesh_path)
-    # mesh = scene.geometry['model']
     mesh = list(scene.geometry.values())[0]
-
     print(f"\nLoaded mesh with {len(mesh.vertices)} vertices and {len(mesh.faces)} faces")
-
-    # Align mesh to point cloud before segmentation
+    
+    # Align mesh to point cloud
     aligned_mesh = align_mesh_to_point_cloud(
         mesh, 
         points_3d, 
@@ -1748,17 +1935,144 @@ def main(OBJECT, flip_z=True):
         output_path=os.path.join(output_dir, "mesh_alignment.png")
     )
     
-    # Visualize point cloud with mesh
+    # Visualize point cloud with aligned mesh
     visualization_path = os.path.join(output_dir, "point_cloud_with_mesh.png")
     print("\nVisualizing point cloud alignment with mesh...")
-    visualize_point_cloud_with_mesh(points_3d, labels, aligned_mesh, visualization_path)
+    visualize_point_cloud_with_mesh(points_3d, labels, aligned_mesh, visualization_path, flip_mesh_z=False)
     
-    # Segment mesh into parts
-    unique_labels = np.unique(labels)
-    # segment_and_save_parts(mesh, points_3d, np.array([list(unique_labels).index(l) for l in labels]), 
-    #                       unique_labels, output_dir, OBJECT)
-    segment_model_by_labels(aligned_mesh, points_3d, labels,
-                            instance_ids, output_dir, OBJECT)
+    # Organize point clouds by instance ID
+    print("\nOrganizing point clouds by instance ID...")
+    point_clouds_by_instance = {}
+    for instance_id in np.unique(instance_ids):
+        mask = instance_ids == instance_id
+        point_clouds_by_instance[instance_id] = points_3d[mask]
+        print(f"  Instance {instance_id}: {len(points_3d[mask])} points")
+    
+    # Merge similar instances using geometric consistency
+    print("\nMerging similar instances across views...")
+    instance_mapping, clusters = merge_instances_with_geometric_consistency(
+        point_clouds_by_instance, 
+        np.unique(instance_ids),
+        distance_threshold=0.05,  # Adjust based on your data scale
+        consistency_threshold=0.7  # Adjust based on desired strictness
+    )
+    
+    # Create merged point clouds
+    print("\nCreating merged point clouds for unique parts...")
+    merged_points_all = []
+    merged_labels_all = []
+    merged_instance_ids_all = []
+    
+    for cluster_idx, cluster_instances in enumerate(clusters):
+        representative_id = cluster_instances[0]
+        
+        # Combine all points from this cluster
+        cluster_points = []
+        cluster_labels = []
+        
+        for instance_id in cluster_instances:
+            mask = instance_ids == instance_id
+            cluster_points.append(points_3d[mask])
+            # Get the label for this instance (should be the same for all points in the instance)
+            if np.any(mask):
+                instance_label = labels[np.where(mask)[0][0]]
+                cluster_labels.extend([instance_label] * np.sum(mask))
+        
+        # Stack all points
+        if cluster_points:
+            combined_points = np.vstack(cluster_points)
+            
+            # # Optionally downsample if there are too many points
+            # if len(combined_points) > 10000:
+            #     # Keep track of indices before downsampling
+            #     indices = np.random.choice(len(combined_points), 10000, replace=False)
+            #     combined_points = combined_points[indices]
+            #     cluster_labels = [cluster_labels[i] for i in indices]
+            
+            # Add to merged collections
+            merged_points_all.append(combined_points)
+            merged_labels_all.extend(cluster_labels)
+            merged_instance_ids_all.extend([representative_id] * len(combined_points))
+            
+            print(f"  Cluster {cluster_idx} (representative: {representative_id}): {len(combined_points)} points")
+    
+    # Stack all merged points
+    if merged_points_all:
+        merged_points = np.vstack(merged_points_all)
+        merged_labels = np.array(merged_labels_all)
+        merged_instance_ids = np.array(merged_instance_ids_all)
+        
+        print(f"\nFinal merged point cloud has {len(merged_points)} points with {len(np.unique(merged_instance_ids))} unique parts")
+        
+        # Visualize merged point cloud
+        vis_path = os.path.join(output_dir, 'merged_point_cloud.png')
+        
+        # Prepare camera parameters for visualization
+        all_camera_params = []
+        for params in camera_params:
+            if flip_z:
+                t_vis = params['t'].copy()
+                t_vis[2] = -t_vis[2]
+                all_camera_params.append({'R': params['R'], 't': t_vis})
+            else:
+                all_camera_params.append({'R': params['R'], 't': params['t']})
+                
+        visualize_point_cloud_with_cameras(
+            merged_points, merged_instance_ids, all_camera_params,
+            'Merged Point Cloud (Unique Parts)', 
+            vis_path
+        )
+        
+        # Segment mesh into parts using merged instances
+        print("\nSegmenting mesh into unique parts...")
+        
+        # Create a mapping from string labels to numeric IDs for internal use
+        unique_instances = np.unique(merged_instance_ids)
+        label_to_id = {label: i for i, label in enumerate(unique_instances)}
+        
+        # Convert string instance IDs to numeric IDs
+        numeric_instance_ids = np.array([label_to_id[label] for label in merged_instance_ids])
+        
+        # Segment and save parts
+        segment_and_save_parts(
+            mesh=aligned_mesh,
+            segmented_points=merged_points,
+            point_labels=numeric_instance_ids,
+            unique_labels=list(range(len(unique_instances))),
+            output_dir=output_dir,
+            OBJECT=OBJECT,
+            flip_mesh_z=False  # Already aligned
+        )
+        
+        # Also save individual part meshes with meaningful names
+        for i, instance_id in enumerate(unique_instances):
+            # Get the original label for this instance
+            instance_mask = merged_instance_ids == instance_id
+            if np.any(instance_mask):
+                instance_label = merged_labels[np.where(instance_mask)[0][0]]
+                
+                # Get points for this instance
+                instance_points = merged_points[instance_mask]
+                
+                # Create label array for these points (all same instance)
+                instance_numeric_id = label_to_id[instance_id]
+                instance_point_labels = np.full(len(instance_points), instance_numeric_id)
+                
+                # Segment and save this part
+                part_output_dir = os.path.join(output_dir, 'parts')
+                os.makedirs(part_output_dir, exist_ok=True)
+                
+                segment_and_save_parts(
+                    mesh=aligned_mesh,
+                    segmented_points=instance_points,
+                    point_labels=instance_point_labels,
+                    unique_labels=[instance_numeric_id],
+                    output_dir=part_output_dir,
+                    OBJECT=f"{OBJECT}_{instance_label}_{i}",
+                    flip_mesh_z=False  # Already aligned
+                )
+    else:
+        print("No valid merged point clouds, skipping mesh segmentation.")
     
     print("\nProcessing completed.")
 
