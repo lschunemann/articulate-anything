@@ -345,190 +345,138 @@ def icp_align(source_points, target_points, max_iterations=50, tolerance=1e-6, r
     
     return T, current_error
 
-def align_meshes(source_mesh, target_mesh, method_name, sample_count=20000):
-    """
-    Align source mesh to target mesh using a robust multi-stage approach.
-    """
-    # Sample points for alignment
-    if len(source_mesh.faces) > 0:
-        print(f"Sampling {sample_count} points from source mesh surface")
-        source_points = source_mesh.sample(sample_count)
-    else:
-        source_points = source_mesh.vertices
+
+def icp_refinement(src_points, tgt_points, max_iterations=50, tolerance=1e-6):
+    from scipy.spatial import KDTree
+    src = src_points.copy()
+    tgt = tgt_points.copy()
     
-    if len(target_mesh.faces) > 0:
-        print(f"Sampling {sample_count} points from target mesh surface")
-        target_points = target_mesh.sample(sample_count)
-    else:
-        target_points = target_mesh.vertices
+    src_centroid = np.mean(src, axis=0)
+    tgt_centroid = np.mean(tgt, axis=0)
     
-    # STAGE 1: Normalize both point clouds
-    # Center both point clouds
+    src_centered = src - src_centroid
+    tgt_centered = tgt - tgt_centroid
+    
+    R = np.eye(3)
+    t = np.zeros(3)
+    
+    for _ in range(max_iterations):
+        tree = KDTree(tgt_centered)
+        distances, indices = tree.query(src_centered @ R.T)
+        
+        valid_src = src_centered
+        valid_tgt = tgt_centered[indices]
+        
+        H = valid_src.T @ valid_tgt
+        
+        U, _, Vt = np.linalg.svd(H)
+        R_new = Vt.T @ U.T
+        
+        # Ensure proper rotation matrix (det=1)
+        if np.linalg.det(R_new) < 0:
+            Vt[-1, :] *= -1
+            R_new = Vt.T @ U.T
+        
+        t_new = tgt_centroid - np.dot(src_centroid, R_new.T)
+        src_centered = (src_centered @ R_new.T) + t_new
+        
+        error = np.mean(np.linalg.norm(src_centered - tgt_centered, axis=1))
+        
+        if error < tolerance:
+            break
+    
+    transformation = np.eye(4)
+    transformation[:3, :3] = R_new
+    transformation[:3, 3] = t_new
+    return transformation, error
+
+def compute_principal_axes(points):
+    cov = np.cov(points.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    sorted_indices = np.argsort(eigenvalues)[::-1]
+    eigenvectors = eigenvectors[:, sorted_indices]
+    
+    # Ensure the determinant of the eigenvector matrix is positive
+    if np.linalg.det(eigenvectors) < 0:
+        eigenvectors[:, -1] *= -1  # Flip the sign of the last eigenvector
+    
+    return eigenvectors
+
+def align_meshes(source_mesh, target_mesh, sample_count=20000, use_icp=True):
+    """
+    Align source mesh to target mesh using centroid adjustment, pca-based ellipsoid alignment,
+    and optionally refined with iterative closest point (ICP).
+    
+    Args:
+        source_mesh: Source mesh object.
+        target_mesh: Target mesh object.
+        sample_count: Number of points to sample for alignment.
+        use_icp: Perform ICP refinement as the final stage (default: True).
+    Returns:
+        aligned_mesh: Source mesh aligned to target mesh.
+        transform_params: Transformation parameters (translation, rotation, scale).
+        final_distance: Chamfer distance after alignment.
+        target_mesh, source_cloud, target_cloud, aligned_cloud: Visualization point clouds.
+    """
+    import trimesh
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+    
+    # Sample points
+    source_points = source_mesh.sample(sample_count) #if hasattr(source_mesh, 'sample') else source_mesh.vertices
+    target_points = target_mesh.sample(sample_count) #if hasattr(target_mesh, 'sample') else target_mesh.vertices
+    
+    # Preprocessing: Centering and normalization
     source_centroid = np.mean(source_points, axis=0)
     target_centroid = np.mean(target_points, axis=0)
     
     source_centered = source_points - source_centroid
     target_centered = target_points - target_centroid
     
-    # Scale to unit cube
-    source_scale = np.max([np.ptp(source_centered[:, 0]), 
-                          np.ptp(source_centered[:, 1]), 
-                          np.ptp(source_centered[:, 2])])
-    target_scale = np.max([np.ptp(target_centered[:, 0]), 
-                          np.ptp(target_centered[:, 1]), 
-                          np.ptp(target_centered[:, 2])])
+    source_scale = np.mean(np.linalg.norm(source_centered, axis=1))
+    target_scale = np.mean(np.linalg.norm(target_centered, axis=1))
     
     source_normalized = source_centered / source_scale
     target_normalized = target_centered / target_scale
     
-    # STAGE 2: Try multiple initial alignments and pick the best
-    best_transform = np.eye(4)
-    best_distance = float('inf')
+    source_axes = compute_principal_axes(source_normalized)
+    target_axes = compute_principal_axes(target_normalized)
     
-    # Try different initial rotations
-    rotations = []
-    for angle in [0, np.pi/2, np.pi, 3*np.pi/2]:
-        # Rotation around X
-        Rx = np.array([
-            [1, 0, 0, 0],
-            [0, np.cos(angle), -np.sin(angle), 0],
-            [0, np.sin(angle), np.cos(angle), 0],
-            [0, 0, 0, 1]
-        ])
-        rotations.append(Rx)
-        
-        # Rotation around Y
-        Ry = np.array([
-            [np.cos(angle), 0, np.sin(angle), 0],
-            [0, 1, 0, 0],
-            [-np.sin(angle), 0, np.cos(angle), 0],
-            [0, 0, 0, 1]
-        ])
-        rotations.append(Ry)
-        
-        # Rotation around Z
-        Rz = np.array([
-            [np.cos(angle), -np.sin(angle), 0, 0],
-            [np.sin(angle), np.cos(angle), 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1]
-        ])
-        rotations.append(Rz)
+    rotation_matrix = target_axes @ source_axes.T
     
-    # Try each rotation as initial alignment
-    for rot in rotations:
-        # Create transformation matrix for normalization
-        init_transform = np.eye(4)
-        init_transform[:3, :3] = rot[:3, :3] * (target_scale / source_scale)
-        init_transform[:3, 3] = target_centroid - source_centroid @ rot[:3, :3].T * (target_scale / source_scale)
-        
-        # Apply initial transformation
-        init_transformed = transform_points_with_matrix(source_points, init_transform)
-        
-        # Run ICP from this starting point
-        icp_transform, error = icp_align(init_transformed, target_points)
-        
-        # Combine transformations
-        combined_transform = icp_transform @ init_transform
-        
-        # Evaluate alignment
-        aligned_points = transform_points_with_matrix(source_points, combined_transform)
-        distance = chamfer_distance(aligned_points, target_points)
-        
-        if distance < best_distance:
-            best_distance = distance
-            best_transform = combined_transform
+    # Transformation matrix after PCA-based alignment
+    pca_transform = np.eye(4)
+    pca_transform[:3, :3] = rotation_matrix * (target_scale / source_scale)
+    translation = target_centroid - np.dot(source_centroid, rotation_matrix.T) * (target_scale / source_scale)
+    pca_transform[:3, 3] = translation
     
-    # STAGE 3: Try PCA-based alignment
-    try:
-        # Compute covariance matrices
-        source_cov = np.cov(source_normalized.T)
-        target_cov = np.cov(target_normalized.T)
-        
-        # Get eigenvectors (principal axes)
-        source_evals, source_evecs = np.linalg.eigh(source_cov)
-        target_evals, target_evecs = np.linalg.eigh(target_cov)
-        
-        # Sort by eigenvalues (largest first)
-        source_idx = np.argsort(source_evals)[::-1]
-        source_evecs = source_evecs[:, source_idx]
-        
-        target_idx = np.argsort(target_evals)[::-1]
-        target_evecs = target_evecs[:, target_idx]
-        
-        # Try all possible axis alignments (8 possibilities due to sign flips)
-        for sx in [1, -1]:
-            for sy in [1, -1]:
-                for sz in [1, -1]:
-                    # Create modified eigenvector matrix with sign flips
-                    mod_source_evecs = source_evecs.copy()
-                    mod_source_evecs[:, 0] *= sx
-                    mod_source_evecs[:, 1] *= sy
-                    mod_source_evecs[:, 2] *= sz
-                    
-                    # Compute rotation matrix from principal axes
-                    R_pca = target_evecs @ mod_source_evecs.T
-                    
-                    # Create transformation matrix
-                    pca_transform = np.eye(4)
-                    pca_transform[:3, :3] = R_pca * (target_scale / source_scale)
-                    pca_transform[:3, 3] = target_centroid - source_centroid @ R_pca.T * (target_scale / source_scale)
-                    
-                    # Apply PCA transformation
-                    pca_transformed = transform_points_with_matrix(source_points, pca_transform)
-                    
-                    # Run ICP from this starting point
-                    icp_transform, error = icp_align(pca_transformed, target_points)
-                    
-                    # Combine transformations
-                    combined_transform = icp_transform @ pca_transform
-                    
-                    # Evaluate alignment
-                    aligned_points = transform_points_with_matrix(source_points, combined_transform)
-                    distance = chamfer_distance(aligned_points, target_points)
-                    
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_transform = combined_transform
-    except np.linalg.LinAlgError:
-        print("PCA alignment failed, using best rotation from grid search")
+    # Transform source points using PCA-based alignment
+    transformed_points = (source_points @ rotation_matrix.T) * (target_scale / source_scale) + translation
     
-    # STAGE 4: Final ICP refinement
-    aligned_points = transform_points_with_matrix(source_points, best_transform)
-    final_transform, _ = icp_align(aligned_points, target_points, max_iterations=100, tolerance=1e-7)
+    # Optional ICP refinement
+    if use_icp:
+        icp_transform, icp_error = icp_refinement(transformed_points, target_points)
+        final_transform = icp_transform @ pca_transform
+    else:
+        final_transform = pca_transform
     
-    # Combine transformations
-    final_combined_transform = final_transform @ best_transform
-    
-    # Apply the final transformation to the source mesh
+    # Apply final transformation to mesh
     aligned_mesh = source_mesh.copy()
-    aligned_mesh.apply_transform(final_combined_transform)
+    aligned_mesh.apply_transform(final_transform)
     
-    # Extract transformation parameters for reporting
-    # Translation
-    tx, ty, tz = final_combined_transform[:3, 3]
-    
-    # Scale (approximated from the transformation matrix)
-    scale_matrix = final_combined_transform[:3, :3]
+    # Compute transformation parameters
+    scale_matrix = final_transform[:3, :3]
     scale = np.cbrt(np.abs(np.linalg.det(scale_matrix)))
-    
-    # Rotation (convert to Euler angles)
     rotation_matrix = scale_matrix / scale
-    try:
-        r = Rotation.from_matrix(rotation_matrix)
-        rx, ry, rz = r.as_euler('xyz')
-    except:
-        rx, ry, rz = 0, 0, 0
-        print("Warning: Could not extract rotation angles from transformation matrix")
+    rotation_angles = Rotation.from_matrix(rotation_matrix).as_euler('xyz', degrees=True)
+    translation = final_transform[:3, 3]
     
-    # Pack parameters for reporting
-    transform_params = [tx, ty, tz, rx, ry, rz, scale]
+    transform_params = list(translation) + list(rotation_angles) + [scale]
     
-    # Calculate final chamfer distance
-    final_aligned_points = transform_points_with_matrix(source_points, final_combined_transform)
+    final_aligned_points = aligned_mesh.vertices
     final_distance = chamfer_distance(final_aligned_points, target_points)
     
-    # Create point clouds for visualization
+    # Visualization point clouds
     source_point_cloud = trimesh.points.PointCloud(source_points)
     target_point_cloud = trimesh.points.PointCloud(target_points)
     aligned_point_cloud = trimesh.points.PointCloud(final_aligned_points)
@@ -664,7 +612,7 @@ def compare_meshes(gt_path, method_paths, method_names, output_dir, save_aligned
         
         # Call the updated align_meshes function
         aligned_mesh, transform_params, final_distance, target_mesh_transformed, src_pc, tgt_pc, aligned_pc = align_meshes(
-            gt_mesh, method_mesh, method_name
+            gt_mesh, method_mesh
         )
         
         # Store for visualization
