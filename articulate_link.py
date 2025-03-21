@@ -242,97 +242,99 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
 
 def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
     """Use OpenAI API to identify which part should be the base."""
-    import trimesh
-    import numpy as np
-    from PIL import Image
     import os
     import logging
     import base64
-    import io
-    import openai
     import json
+    import numpy as np
+    import trimesh
+    import pyrender
+    from PIL import Image
+    import openai
     
-    logging.info("Identifying base part using OpenAI API...")
+    logging.info("Identifying base part using OpenAI API with PyRender...")
     
-    # Render individual parts using trimesh (works in headless environments)
+    # Render individual parts using PyRender (works in headless environments)
     part_images = {}
+    
+    # Set up offscreen rendering
+    os.environ['PYOPENGL_PLATFORM'] = 'egl'  # Use EGL for headless rendering
+    
     for mesh_file in mesh_files:
         part_name = os.path.splitext(mesh_file)[0]
         mesh_path = os.path.join(segmented_mesh_dir, mesh_file)
         
         try:
             # Load mesh with trimesh
-            mesh = trimesh.load(mesh_path)
+            trimesh_mesh = trimesh.load(mesh_path)
             
-            # Create a scene with the mesh
-            scene = trimesh.Scene(mesh)
+            # Convert to pyrender mesh
+            mesh = pyrender.Mesh.from_trimesh(trimesh_mesh)
             
-            # Get a camera view
-            camera_angles = [(0, 0, 0), (np.pi/4, 0, 0), (0, np.pi/4, 0)]
+            # Create a scene and add the mesh
+            scene = pyrender.Scene()
+            scene.add(mesh)
             
-            for i, angles in enumerate(camera_angles):
-                # Create a camera transform matrix
-                camera_transform = trimesh.transformations.rotation_matrix(
-                    angles[0], [1, 0, 0], scene.centroid)
-                camera_transform = trimesh.transformations.rotation_matrix(
-                    angles[1], [0, 1, 0], scene.centroid, camera_transform)
-                camera_transform = trimesh.transformations.rotation_matrix(
-                    angles[2], [0, 0, 1], scene.centroid, camera_transform)
-                
-                # Move the camera away from the object
-                camera_transform[0:3, 3] = camera_transform[0:3, 3] + np.array([0, 0, 2.0]) * mesh.scale
-                
-                # Render the mesh
-                try:
-                    rendered = scene.save_image(resolution=[400, 400], 
-                                               transform=camera_transform,
-                                               visible=True)
-                    
-                    # Convert to PIL Image
-                    img = Image.open(io.BytesIO(rendered))
-                    
-                    # Save the image
-                    temp_img_path = os.path.join(segmented_mesh_dir, f"{part_name}_view_{i}.png")
-                    img.save(temp_img_path)
-                    
-                    # Add to part_images
-                    if part_name not in part_images:
-                        part_images[part_name] = []
-                    part_images[part_name].append(temp_img_path)
-                    
-                    logging.info(f"Rendered part: {part_name}, view {i}")
-                except Exception as e:
-                    logging.warning(f"Could not render view {i} of part {part_name}: {str(e)}")
-        
+            # Add a camera
+            camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=1.0)
+            
+            # Position the camera to look at the mesh
+            s = np.max(trimesh_mesh.extents) * 2.5
+            camera_pose = np.array([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, s],
+                [0.0, 0.0, 0.0, 1.0]
+            ])
+            scene.add(camera, pose=camera_pose)
+            
+            # Add light
+            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
+            scene.add(light, pose=camera_pose)
+            
+            # Render the scene
+            r = pyrender.OffscreenRenderer(400, 400)
+            color, _ = r.render(scene)
+            r.delete()
+            
+            # Convert to PIL Image
+            img = Image.fromarray(color)
+            
+            # Save the image
+            temp_img_path = os.path.join(segmented_mesh_dir, f"{part_name}_render.png")
+            img.save(temp_img_path)
+            
+            # Add to part_images
+            part_images[part_name] = temp_img_path
+            logging.info(f"Rendered part: {part_name}")
+            
         except Exception as e:
-            logging.warning(f"Could not load part {part_name}: {str(e)}")
+            logging.warning(f"Could not render part {part_name}: {str(e)}")
     
     if not part_images:
         raise ValueError("Failed to render any parts for analysis")
     
     # Prepare images for API call
     image_messages = []
-    for part_name, img_paths in part_images.items():
+    for part_name, img_path in part_images.items():
         # Add part name
         image_messages.append({
             "type": "text",
             "text": f"Part: {part_name}"
         })
         
-        # Add images for this part
-        for img_path in img_paths:
-            # Convert image to base64
-            with open(img_path, "rb") as img_file:
-                encoded_image = base64.b64encode(img_file.read()).decode('utf-8')
-                
-            # Add to messages
-            image_messages.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{encoded_image}",
-                    "detail": "low"
-                }
-            })
+        # Convert image to base64
+        with open(img_path, "rb") as img_file:
+            encoded_image = base64.b64encode(img_file.read()).decode('utf-8')
+            
+        # Add to messages
+        image_messages.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{encoded_image}",
+                "detail": "low"
+            }
+        })
     
     # Create the prompt
     prompt = """
@@ -350,12 +352,6 @@ def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
     IMPORTANT: Your response must be in JSON format with a single field "base_part" containing the name of the part you've selected as the base.
     Example response: {"base_part": "part_name_here"}
     """
-    
-    # Prepare the API call
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant that analyzes 3D object parts and identifies which part should be the base."},
-        {"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}
-    ]
     
     # Make the API call
     max_retries = 3
