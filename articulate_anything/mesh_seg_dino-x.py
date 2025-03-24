@@ -128,7 +128,7 @@ if __name__ == "__main__":
     # text_prompt = "top surface.  leg.  frame.  handle.  drawer." # drawer
     text_prompt = "display window.  main body/housing.  control panel.  handle.  door." # microwave
      # laptop
-    api_token = "1c9a49043bb8d909075526295bb20fc4"#os.environ.get("DINO_X_API_KEY")
+    api_token = os.environ.get("DINO_X_API_KEY") #"1c9a49043bb8d909075526295bb20fc4"
     
     
     process_multiple_views(input_dir, text_prompt, output_dir, api_token)
