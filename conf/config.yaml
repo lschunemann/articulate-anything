@@ -10,12 +10,13 @@ obj_ids: null
 gpu_id: 0
 cam_view: frontview
 model_name: gpt-4o #gemini-1.5-flash-latest
-link_placement_path: null
+# link_placement_path: null
 gen_config:
   overwrite: false # whether to overwrite the VLM output
 render_part_views: false
-generated: false
-segmented_mesh_dir: "datasets/segmentation_masks/drawer_multi-view/output"
+generated: true
+segmented_mesh_dir: "datasets/segmentation_masks/drawer_multi-view/output/parts"
+video_path: "datasets/in-the-wild-dataset/videos/drawer_RL_Bench.mp4"
 
 actor_critic:
   actor_only: false
