@@ -15,7 +15,7 @@ from articulate_anything.api.odio_urdf import (
 
 
 def mask_urdf(input_file, format_rviz=False, skip_helper=True,
-              full_mesh_path=True):
+              full_mesh_path=True, generated=True):
     """
     Masks a URDF file by removing joint, collision, and visual origin information.
 
@@ -34,7 +34,7 @@ def mask_urdf(input_file, format_rviz=False, skip_helper=True,
         link_name = link.attrib["name"]
         visuals = []
         Collisions = []
-        if link_name not in link_semantics and link_name != "base" and skip_helper:
+        if link_name not in link_semantics and link_name != "base" and skip_helper and not generated:
             # deliberately skipping links like helper
             continue
 
