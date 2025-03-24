@@ -98,6 +98,8 @@ def setup_sapien(cfg):
             os.path.dirname(cfg.urdf.file), "raise_distances.json")
         p.disconnect(client)
 
+    if not os.path.exists(cfg.urdf.raise_distance_file):
+        logging.error("Failed to generate raise distance file during setup_pybullet.")
     raise_distance = load_json(cfg.urdf.raise_distance_file)
     # Apply rotation and translation
     rotation = R.from_euler('xyz', [
