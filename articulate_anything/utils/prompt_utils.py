@@ -173,6 +173,13 @@ class GPTWrapper:
     def _encode_image_to_base64(self, pil_image):
         """Convert PIL Image to base64 string"""
         buffered = BytesIO()
+        # Convert RGBA to RGB if needed
+        if pil_image.mode == 'RGBA':
+            # Create a white background
+            background = Image.new('RGB', pil_image.size, (255, 255, 255))
+            # Paste the image on the background, using the alpha channel as mask
+            background.paste(pil_image, mask=pil_image.split()[3])
+            pil_image = background
         pil_image.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
         return img_str
