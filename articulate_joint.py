@@ -36,7 +36,8 @@ def preprocess(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> Dict[
         "video": process_visual,
         "image": process_image,
         "partnet": process_partnet,
-        "text": process_text
+        "text": process_text,
+        "generated": process_generated
     }
     processor = modality_processors.get(cfg.modality)
     if not processor:
@@ -154,6 +155,12 @@ def process_visual(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> D
 
     return cfg
 
+def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> DictConfig:
+    """
+    """
+
+    return cfg
+
 
 def process_text(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> DictConfig:
     # IMPORTANT: move meshes to the joint_actor directory
@@ -176,7 +183,7 @@ def actor_function(iteration: int, seed: int, cfg: DictConfig,
     joint_actor = make_joint_actor(cfg)(create_task_config(cfg, join_path(
         "joint_actor", f"iter_{iteration}", f"seed_{seed}"))
     )
-    joint_actor.generate_prediction(gt_input=cfg.prompt,
+    joint_actor.generate_prediction(gt_input=cfg.video_path, #cfg.prompt
                                     **retry_kwargs, **cfg.gen_config)
     joint_actor.render_prediction(gpu_id)
     video = joint_actor.load_predicted_rendering()
