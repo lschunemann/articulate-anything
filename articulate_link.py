@@ -75,7 +75,7 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     import logging
     import re
 
-    segmented_mesh_dir = os.path.join(segmented_mesh_dir, "output")
+    segmented_mesh_dir = os.path.join(segmented_mesh_dir, "output/parts")
     
     # Create absolute paths to avoid nesting issues
     base_dataset_dir = os.path.dirname(cfg.dataset_dir) if cfg.dataset_dir.endswith(selected_obj_id) else cfg.dataset_dir
@@ -90,7 +90,7 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     os.makedirs(obj_output_dir, exist_ok=True)
     
     # Get mesh files
-    mesh_files = [f for f in os.listdir(segmented_mesh_dir) if f.endswith(('.obj', '.glb', '.stl'))]
+    mesh_files = [f for f in os.listdir(segmented_mesh_dir) if f.endswith(('.obj'))]#, '.glb', '.stl'))]
     
     if not mesh_files:
         raise ValueError(f"No mesh files found in {segmented_mesh_dir}")
@@ -226,39 +226,129 @@ def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -
     
     # Render frontview using Open3D
     frontview_path = join_path(obj_dataset_dir, "robot_frontview.png")
-    render_frontview_with_open3d(segmented_mesh_dir, frontview_path)
-    
-    # Copy the frontview image to the output directory as well
-    output_frontview_path = join_path(obj_output_dir, "robot_frontview.png")
+    # render_frontview_with_open3d(segmented_mesh_dir, frontview_path)
+    render_frontview_with_matplotlib(segmented_mesh_dir, frontview_path)
+
+    # Copy the frontview image to the link placement output directory
+    link_placement_dir = os.path.dirname(cfg.out_dir)
+    output_frontview_path = join_path(link_placement_dir, "robot_frontview.png")
     os.makedirs(os.path.dirname(output_frontview_path), exist_ok=True)
     shutil.copy(frontview_path, output_frontview_path)
+
+    # Also copy to the specific iteration directory
+    iter_seed_dir = cfg.out_dir
+    iter_frontview_path = join_path(iter_seed_dir, "robot_frontview.png")
+    shutil.copy(frontview_path, iter_frontview_path)
+
+    logging.info(f"Copied frontview image to {output_frontview_path} and {iter_frontview_path}")
     
     # Set up the configuration for link placement
     cfg.dataset_dir = obj_dataset_dir
     cfg.out_dir = obj_output_dir
-    cfg.prompt = selected_obj_id
+    cfg.prompt = selected_obj_id # TODO: maybe don't overwrite? Error in critic
     
     return cfg
 
+def render_frontview_with_matplotlib(mesh_dir, output_path):
+    """Render a front view of all meshes in the directory using matplotlib."""
+    import os
+    import trimesh
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')  # Use non-interactive backend
+    import matplotlib.pyplot as plt
+    import logging
+    
+    logging.info(f"Rendering front view of meshes in {mesh_dir} using matplotlib...")
+    
+    # Get all mesh files
+    mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith(('.obj'))]#, '.glb', '.stl'))]
+    
+    if not mesh_files:
+        raise ValueError(f"No mesh files found in {mesh_dir}")
+    
+    # Create a figure
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Load and plot all meshes
+    all_vertices = []
+    
+    for mesh_file in mesh_files:
+        try:
+            # Load mesh
+            mesh_path = os.path.join(mesh_dir, mesh_file)
+            mesh_or_scene = trimesh.load(mesh_path)
+            # Check whether we have a Trimesh or a Scene object
+            if isinstance(mesh_or_scene, trimesh.Scene):
+                # Extract the first geometry from the scene
+                if mesh_or_scene.geometry:
+                    mesh = list(mesh_or_scene.geometry.values())[0]
+                else:
+                    raise RuntimeError(f"No geometries found in scene for {mesh_file}.")
+            elif isinstance(mesh_or_scene, trimesh.Trimesh):
+                mesh =  mesh_or_scene  # It's already a Trimesh object
+            else:
+                raise TypeError(f"Unsupported mesh type: {type(mesh_or_scene)}")
+            
+            # Get mesh vertices and faces
+            vertices = mesh.vertices
+            faces = mesh.faces
+            
+            # Plot the mesh
+            ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], 
+                           triangles=faces, alpha=0.7, 
+                           edgecolor='gray', linewidth=0.2)
+            
+            # Collect vertices for bounding box calculation
+            all_vertices.extend(vertices)
+            
+        except Exception as e:
+            logging.warning(f"Could not render mesh {mesh_file}: {str(e)}")
+    
+    if not all_vertices:
+        raise ValueError("Failed to load any meshes for rendering")
+    
+    # Convert to numpy array for calculations
+    all_vertices = np.array(all_vertices)
+    
+    # Set the view to front
+    ax.view_init(elev=0, azim=0)
+    
+    # Set equal aspect ratio
+    ax.set_box_aspect([1, 1, 1])
+    
+    # Remove axis labels and ticks
+    ax.set_axis_off()
+    
+    # Set tight layout
+    plt.tight_layout()
+    
+    # Save the figure
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    logging.info(f"Rendered front view saved to {output_path}")
+
+
 def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
-    """Use OpenAI API to identify which part should be the base."""
+    """Use OpenAI API to identify which part should be the base using trimesh + matplotlib."""
     import os
     import logging
     import base64
     import json
-    import numpy as np
-    import trimesh
-    import pyrender
-    from PIL import Image
     import openai
+    import trimesh
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')  # Use non-interactive backend
+    import matplotlib.pyplot as plt
+    from PIL import Image
     
-    logging.info("Identifying base part using OpenAI API with PyRender...")
+    logging.info("Identifying base part using OpenAI API with trimesh + matplotlib...")
     
-    # Render individual parts using PyRender (works in headless environments)
+    # Render individual parts
     part_images = {}
-    
-    # Set up offscreen rendering
-    os.environ['PYOPENGL_PLATFORM'] = 'egl'  # Use EGL for headless rendering
     
     for mesh_file in mesh_files:
         part_name = os.path.splitext(mesh_file)[0]
@@ -266,43 +356,53 @@ def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
         
         try:
             # Load mesh with trimesh
-            trimesh_mesh = trimesh.load(mesh_path)
+            mesh_or_scene = trimesh.load(mesh_path)
             
-            # Convert to pyrender mesh
-            mesh = pyrender.Mesh.from_trimesh(trimesh_mesh)
+            # Check whether we have a Trimesh or a Scene object
+            if isinstance(mesh_or_scene, trimesh.Scene):
+                # Extract the first geometry from the scene
+                if mesh_or_scene.geometry:
+                    mesh = list(mesh_or_scene.geometry.values())[0]
+                else:
+                    raise RuntimeError(f"No geometries found in scene for {part_name}.")
+            elif isinstance(mesh_or_scene, trimesh.Trimesh):
+                mesh = mesh_or_scene  # It's already a Trimesh object
+            else:
+                raise TypeError(f"Unsupported mesh type for {part_name}: {type(mesh_or_scene)}")
             
-            # Create a scene and add the mesh
-            scene = pyrender.Scene()
-            scene.add(mesh)
+            # Create a figure with just the front view
+            fig = plt.figure(figsize=(8, 8))
+            ax = fig.add_subplot(111, projection='3d')
             
-            # Add a camera
-            camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=1.0)
+            # Get mesh vertices and faces
+            vertices = mesh.vertices
+            faces = mesh.faces
             
-            # Position the camera to look at the mesh
-            s = np.max(trimesh_mesh.extents) * 2.5
-            camera_pose = np.array([
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, s],
-                [0.0, 0.0, 0.0, 1.0]
-            ])
-            scene.add(camera, pose=camera_pose)
+            # Plot the mesh manually
+            ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], 
+                            triangles=faces, color='lightgray', alpha=0.8, 
+                            edgecolor='gray', linewidth=0.2)
             
-            # Add light
-            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
-            scene.add(light, pose=camera_pose)
+            # Set the view to front
+            ax.view_init(elev=0, azim=0)
             
-            # Render the scene
-            r = pyrender.OffscreenRenderer(400, 400)
-            color, _ = r.render(scene)
-            r.delete()
+            # Set equal aspect ratio
+            ax.set_box_aspect([1, 1, 1])
             
-            # Convert to PIL Image
-            img = Image.fromarray(color)
+            # Add part name as figure title
+            ax.set_title(f"Part: {part_name}", fontsize=14)
             
-            # Save the image
+            # Add mesh properties as text
+            props_text = f"Volume: {getattr(mesh, 'volume', 0):.2f}\n"
+            props_text += f"Surface Area: {getattr(mesh, 'area', 0):.2f}\n"
+            props_text += f"Dimensions: {mesh.extents[0]:.2f} x {mesh.extents[1]:.2f} x {mesh.extents[2]:.2f}"
+            plt.figtext(0.5, 0.01, props_text, ha='center', fontsize=12)
+            
+            # Save the figure
             temp_img_path = os.path.join(segmented_mesh_dir, f"{part_name}_render.png")
-            img.save(temp_img_path)
+            plt.tight_layout()
+            plt.savefig(temp_img_path, dpi=100)
+            plt.close(fig)
             
             # Add to part_images
             part_images[part_name] = temp_img_path
@@ -313,7 +413,7 @@ def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
     
     if not part_images:
         raise ValueError("Failed to render any parts for analysis")
-    
+        
     # Prepare images for API call
     image_messages = []
     for part_name, img_path in part_images.items():
@@ -353,70 +453,56 @@ def identify_base_part(mesh_files, segmented_mesh_dir, gpu_id, cfg):
     Example response: {"base_part": "part_name_here"}
     """
     
-    # Make the API call
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = openai.ChatCompletion.create(
-                model="claude-3-5-sonnet-latest",
-                messages=messages,
-                max_tokens=300,
-                temperature=0.2,
-                api_key=os.environ.get("API_KEY"),
-                base_url="https://ai-gateway.mytkhgroup.com/"
-            )
-            
-            # Extract the response
-            response_text = response.choices[0].message.content
-            
-            # Try to parse JSON from the response
-            try:
-                # Find JSON in the response
-                import re
-                json_match = re.search(r'({.*?})', response_text.replace('\n', ''))
-                if json_match:
-                    json_str = json_match.group(1)
-                    result = json.loads(json_str)
-                    
-                    base_part = result.get("base_part")
-                    if base_part and base_part in part_images:
-                        logging.info(f"API identified base part: {base_part}")
-                        
-                        # Clean up temporary images
-                        for part_name, img_paths in part_images.items():
-                            for img_path in img_paths:
-                                if os.path.exists(img_path):
-                                    os.remove(img_path)
-                        
-                        return base_part
-                
-                # If we couldn't parse JSON or the base_part wasn't valid
-                logging.warning(f"Could not extract valid base part from API response: {response_text}")
-            except json.JSONDecodeError:
-                logging.warning(f"Could not parse JSON from API response: {response_text}")
-            
-            # If we get here, try again with a more forceful prompt
-            prompt = f"""
-            CRITICAL: You MUST select exactly one part as the base from the following options: {', '.join(part_images.keys())}
-            
-            The base is the main supporting structure of the object. It's usually:
-            - The largest part
-            - The part at the bottom
-            - The part that other components attach to
-            
-            This is a forced choice situation. You MUST select ONE part as the base.
-            Your response MUST be in valid JSON format: {{"base_part": "part_name_here"}}
-            """
-            
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant that analyzes 3D object parts and identifies which part should be the base."},
-                {"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}
-            ]
-        except Exception as e:
-            logging.warning(f"API call failed (attempt {attempt+1}/{max_retries}): {str(e)}")
+    # Prepare the API call
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant that analyzes 3D object parts and identifies which part should be the base."},
+        {"role": "user", "content": image_messages + [{"type": "text", "text": prompt}]}
+    ]
     
-    # If we've exhausted all retries and still don't have a base part, raise an error
-    raise ValueError(f"Failed to identify a base part after {max_retries} attempts. Cannot proceed without a definitive base selection.")
+    # Make the API call - single attempt, no retries
+    try:
+        client = openai.OpenAI(api_key=os.environ.get('OPENAI_API_KEY'), base_url="https://ai-gateway.mytkhgroup.com/")
+        response = client.chat.completions.create(
+            model="claude-3-5-sonnet-latest",
+            messages=messages,
+            max_tokens=300,
+            temperature=0.2
+        )
+        
+        # Extract the response
+        response_text = response.choices[0].message.content
+        
+        # Try to parse JSON from the response
+        try:
+            # Find JSON in the response
+            import re
+            json_match = re.search(r'({.*?})', response_text.replace('\n', ''))
+            if json_match:
+                json_str = json_match.group(1)
+                result = json.loads(json_str)
+                
+                base_part = result.get("base_part")
+                if base_part and base_part in part_images:
+                    logging.info(f"API identified base part: {base_part}")
+                    
+                    # Clean up temporary images
+                    for part_name, img_path in part_images.items():
+                        if os.path.exists(img_path):
+                            os.remove(img_path)
+                    
+                    return base_part
+            
+            # If we couldn't parse JSON or the base_part wasn't valid
+            logging.warning(f"Could not extract valid base part from API response: {response_text}")
+            raise ValueError(f"Could not extract valid base part from API response: {response_text}")
+            
+        except json.JSONDecodeError:
+            logging.warning(f"Could not parse JSON from API response: {response_text}")
+            raise ValueError(f"Could not parse JSON from API response: {response_text}")
+            
+    except Exception as e:
+        logging.warning(f"API call failed: {str(e)}")
+        raise ValueError(f"API call failed: {str(e)}")
 
 def render_frontview_with_open3d(mesh_dir, output_path):
     """Render a frontview of the object using Open3D."""
@@ -430,7 +516,7 @@ def render_frontview_with_open3d(mesh_dir, output_path):
     vis.create_window(width=800, height=600, visible=False)
     
     # Load all mesh files and add them to the visualizer
-    mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith(('.obj', '.glb', '.stl'))]
+    mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith(('.obj'))]#, '.glb', '.stl'))]
     
     if not mesh_files:
         raise ValueError(f"No mesh files found in {mesh_dir}")
@@ -532,8 +618,8 @@ def actor_function(iteration: int, seed: int, cfg: DictConfig, prompt: str, gpu_
         "link_pred_path": join_path(link_placement_actor.cfg.out_dir, link_placement_actor.OUT_RESULT_PATH),
     }
 
-    link_placement_actor.render_prediction(gpu_id)
-    if cfg.modality != "text":
+    # link_placement_actor.render_prediction(gpu_id)
+    if (cfg.modality != "text") and (cfg.modality != 'generated'):
         gt_link_diff = link_placement_actor.compute_gt_diff()
         logging.info(f"GT link diff is {gt_link_diff}")
         result["gt_link_diff"] = gt_link_diff
@@ -553,7 +639,7 @@ def is_actor_only(cfg):
 
 
 def critic_function(iteration: int, seed: int, cfg: DictConfig, prompt: str, actor_result: Dict[str, Any]) -> Dict[str, Any]:
-    if is_actor_only(cfg):
+    if is_actor_only(cfg) or cfg.modality == "generated":
         return {
             "feedback_score": 10,
         }
