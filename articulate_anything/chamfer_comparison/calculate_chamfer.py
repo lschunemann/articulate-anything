@@ -129,6 +129,30 @@ def scale_to_bounding_sphere(points):
     scaled_points = points_centered / max_distance
     return scaled_points, max_distance, centroid
 
+def center_mesh_to_source(source_points, target_points):
+    """
+    Translate the target mesh such that its centroid aligns with the source mesh centroid.
+
+    Args:
+        source_points (np.ndarray): Nx3 array of source point cloud coordinates.
+        target_points (np.ndarray): Nx3 array of target point cloud coordinates.
+
+    Returns:
+        centered_target_points (np.ndarray): Nx3 array of translated target coordinates.
+        translation_vector (np.ndarray): 1x3 array representing the translation applied to the target mesh.
+    """
+    # Compute centroids
+    source_centroid = np.mean(source_points, axis=0)
+    target_centroid = np.mean(target_points, axis=0)
+
+    # Compute translation vector
+    translation_vector = source_centroid - target_centroid
+
+    # Translate target points
+    centered_target_points = target_points + translation_vector
+
+    return centered_target_points, translation_vector
+
 def generate_rotation_matrix(axis, angle):
     """Generate a rotation matrix for a given axis ('x', 'y', 'z') and angle in radians."""
     c, s = np.cos(angle), np.sin(angle)
@@ -143,7 +167,7 @@ def generate_rotation_matrix(axis, angle):
 
 def transform_points(points, rotation_matrix):
     """Apply a rotation matrix to points."""
-    return points @ rotation_matrix.T
+    return points @ rotation_matrix
 
 def chamfer_distance(points1, points2):
     """Compute the Chamfer distance between two point clouds."""
@@ -156,12 +180,13 @@ def chamfer_distance(points1, points2):
 
 # --- Brute Force Alignment with Scaling ---
 def brute_force_rotation_align_with_scaling(source_points, target_points):
-    """Align source and target point clouds using scaling and brute-force rotation."""
-    # Normalize both point clouds to bounding sphere with unit radius
-    source_scaled, source_radius, source_centroid = scale_to_bounding_sphere(source_points)
-    target_scaled, target_radius, target_centroid = scale_to_bounding_sphere(target_points)
-    # source_scaled = source_points
-    # target_scaled, _ = scale_target_to_source(source_points, target_points)
+    """
+    Align source and target point clouds using scaling and brute-force rotation.
+    """
+    # Scale target points to match the source's bounding radius
+    # scaled_target_points, scale_factor = scale_target_to_source(source_points, target_points)
+    # print(f"Scale Factor Applied: {scale_factor:.6f}")
+    scaled_target_points = target_points.copy()
     
     # Test all combinations of 90-degree rotations
     axes = ['x', 'y', 'z']
@@ -179,9 +204,9 @@ def brute_force_rotation_align_with_scaling(source_points, target_points):
                 R_z = generate_rotation_matrix('z', rz)
                 rotation_matrix = R_z @ R_y @ R_x
                 
-                # Transform and align source points
-                transformed_points = transform_points(source_scaled, rotation_matrix)
-                distance = chamfer_distance(transformed_points, target_scaled)
+                # Transform target points
+                transformed_points = transform_points(scaled_target_points, rotation_matrix)
+                distance = chamfer_distance(source_points, transformed_points)
                 
                 # Track the best alignment
                 if distance < best_distance:
@@ -192,9 +217,8 @@ def brute_force_rotation_align_with_scaling(source_points, target_points):
     print(f"Best rotation: X={np.degrees(best_rotation_combination[0])}°, Y={np.degrees(best_rotation_combination[1])}°, Z={np.degrees(best_rotation_combination[2])}°")
     print(f"Minimum Chamfer Distance: {best_distance:.6f}")
     
-    # Apply the best transform, rescale, and translate back to the target's scale and centroid
-    aligned_scaled = transform_points(source_scaled, best_transform)
-    aligned_points = aligned_scaled * target_radius + target_centroid
+    # Apply the best transform
+    aligned_points = transform_points(target_points, best_transform)
     return aligned_points, best_transform, best_distance
 
 def numpy_to_open3d_point_cloud(points):
@@ -217,7 +241,7 @@ def visualize_points(source_points, target_points, aligned_points, output_path=N
     
     # Source points
     ax1 = fig.add_subplot(131, projection='3d')
-    ax1.scatter(source_points[:, 0], source_points[:, 1], source_points[:, 2], c='blue', s=1, alpha=0.5)
+    ax1.scatter(source_points[:, 0], source_points[:, 1], source_points[:, 2], c='blue', s=1, alpha=0.5, label='GT Points')
     ax1.set_title("Source Points")
     ax1.set_xlabel("X")
     ax1.set_ylabel("Y")
@@ -226,7 +250,7 @@ def visualize_points(source_points, target_points, aligned_points, output_path=N
     
     # Target points
     ax2 = fig.add_subplot(132, projection='3d')
-    ax2.scatter(target_points[:, 0], target_points[:, 1], target_points[:, 2], c='green', s=1, alpha=0.5)
+    ax2.scatter(target_points[:, 0], target_points[:, 1], target_points[:, 2], c='green', s=1, alpha=0.5, label='Scaled Target Points')
     ax2.set_title("Target Points")
     ax2.set_xlabel("X")
     ax2.set_ylabel("Y")
@@ -235,8 +259,8 @@ def visualize_points(source_points, target_points, aligned_points, output_path=N
     
     # Aligned points
     ax3 = fig.add_subplot(133, projection='3d')
-    ax3.scatter(aligned_points[:, 0], aligned_points[:, 1], aligned_points[:, 2], c='blue', s=1, alpha=0.5)
-    ax3.scatter(target_points[:, 0], target_points[:, 1], target_points[:, 2], c='green', s=1, alpha=0.2, label='Target Points')
+    ax3.scatter(aligned_points[:, 0], aligned_points[:, 1], aligned_points[:, 2], c='green', s=1, alpha=0.5, label='Aligned Target Points')
+    ax3.scatter(source_points[:, 0], source_points[:, 1], source_points[:, 2], c='blue', s=1, alpha=0.5, label='GT Points')
     ax3.set_title("Aligned Points")
     ax3.set_xlabel("X")
     ax3.set_ylabel("Y")
@@ -345,30 +369,33 @@ def process_all_meshes(gt_dir, method_dirs, output_base_dir):
                 # Scale target points to match source points
                 scaled_method_points, scale_factor = scale_target_to_source(gt_points, method_points)
                 print(f"Scale Factor Applied: {scale_factor:.6f}")
+
+                # Center target cloud to align its centroid with source cloud
+                scaled_method_points, translation_vector = center_mesh_to_source(gt_points, scaled_method_points)
+                print(f"Translation Vector Applied: {translation_vector}")                
                 
-                # Decide alignment method: brute-force or ICP
-                if method_name == "trellis":
-                    # Use brute-force alignment for trellis method
-                    aligned_points, best_transform, chamfer_dist = brute_force_rotation_align_with_scaling(
-                        gt_points, scaled_method_points
-                    )
-                else:
-                    # Convert point clouds for ICP
-                    source_cloud = numpy_to_open3d_point_cloud(gt_points)
-                    target_cloud = numpy_to_open3d_point_cloud(scaled_method_points)
-                    
-                    # Perform ICP alignment
-                    aligned_cloud, transform_matrix = simple_icp(target_cloud, source_cloud)
-                    aligned_points = np.asarray(aligned_cloud.points)
-                    
-                    # Compute Chamfer distance
-                    chamfer_dist = chamfer_distance(gt_points, aligned_points)
+                # if method_name.lower() == "trellis":
+                #     # Use brute-force alignment as initial guess for trellis method
+                #     scaled_method_points, best_transform, chamfer_dist = brute_force_rotation_align_with_scaling(
+                #         gt_points, scaled_method_points
+                #     )
+
+                # Convert point clouds for ICP
+                source_cloud = numpy_to_open3d_point_cloud(gt_points)
+                target_cloud = numpy_to_open3d_point_cloud(scaled_method_points)
                 
-                method_results[method_name] = {"chamfer_distance": chamfer_dist, "rotation_matrix": best_transform.tolist() if method_name == "trellis" else transform_matrix.tolist()}
+                # Perform ICP alignment
+                aligned_cloud, transform_matrix = simple_icp(target_cloud, source_cloud)
+                aligned_points = np.asarray(aligned_cloud.points)
+                
+                # Compute Chamfer distance
+                chamfer_dist = chamfer_distance(gt_points, aligned_points)
+                
+                method_results[method_name] = {"chamfer_distance": chamfer_dist, "rotation_matrix": transform_matrix.tolist() if method_name == "trellis" else transform_matrix.tolist()}
                 
                 # Save visualization
                 visualize_path = os.path.join(mesh_output_dir, f"{method_name}_visualization.png")
-                visualize_points(gt_points, method_points, aligned_points, output_path=visualize_path)
+                visualize_points(gt_points, scaled_method_points, aligned_points, output_path=visualize_path)
         
         results["methods"] = method_results
         all_results[gt_name] = results
@@ -404,7 +431,7 @@ def generate_summary(all_results, output_dir):
     mesh_names = sorted(mesh_names)
     
     # Create a LaTeX table
-    latex_path = os.path.join(output_dir, "summary.tex")
+    latex_path = os.path.join(output_dir, "chamfer_summary.tex")
     with open(latex_path, 'w') as f:
         # Begin the LaTeX table
         f.write("\\begin{table}[ht]\n")
@@ -449,6 +476,8 @@ def main():
     
     # Compare meshes
     results = process_all_meshes(args.gt, args.methods, args.output_dir)
+
+    generate_summary(results, args.output_dir)
 
 
 if __name__ == "__main__":
