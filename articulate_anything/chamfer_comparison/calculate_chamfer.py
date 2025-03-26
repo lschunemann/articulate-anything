@@ -121,14 +121,6 @@ def sample_points(mesh, sample_count=20000):
     else:
         return mesh.vertices
 
-def scale_to_bounding_sphere(points):
-    """Scale points such that the furthest distance from the centroid becomes 1."""
-    centroid = np.mean(points, axis=0)
-    points_centered = points - centroid
-    max_distance = np.max(np.linalg.norm(points_centered, axis=1))
-    scaled_points = points_centered / max_distance
-    return scaled_points, max_distance, centroid
-
 def center_mesh_to_source(source_points, target_points):
     """
     Translate the target mesh such that its centroid aligns with the source mesh centroid.
@@ -153,17 +145,34 @@ def center_mesh_to_source(source_points, target_points):
 
     return centered_target_points, translation_vector
 
-def generate_rotation_matrix(axis, angle):
-    """Generate a rotation matrix for a given axis ('x', 'y', 'z') and angle in radians."""
-    c, s = np.cos(angle), np.sin(angle)
-    if axis == 'x':
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-    elif axis == 'y':
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-    elif axis == 'z':
-        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-    else:
-        raise ValueError(f"Invalid axis: {axis}. Must be 'x', 'y', or 'z'.")
+def compute_method_averages(all_results):
+    """
+    Compute average Chamfer distance for each method across all meshes.
+
+    Args:
+        all_results (dict): Dictionary containing Chamfer distances for all meshes and methods.
+
+    Returns:
+        dict: Dictionary containing method averages.
+    """
+    # Initialize a dictionary to store Chamfer distances for each method
+    method_distances = {}
+
+    # Loop through all meshes and collect Chamfer distances for each method
+    for mesh_results in all_results.values():
+        if "methods" in mesh_results:
+            for method_name, method_data in mesh_results["methods"].items():
+                chamfer_dist = method_data.get("chamfer_distance", None)
+                if chamfer_dist is not None:
+                    if method_name not in method_distances:
+                        method_distances[method_name] = []
+                    method_distances[method_name].append(chamfer_dist)
+
+    # Compute averages for each method
+    method_averages = {method: np.mean(distances) for method, distances in method_distances.items()}
+
+    return {"method_averages": method_averages}
+
 
 def transform_points(points, rotation_matrix):
     """Apply a rotation matrix to points."""
@@ -177,49 +186,6 @@ def chamfer_distance(points1, points2):
     distances2, _ = tree2.query(points1)  # From points1 to points2
     return np.mean(distances1) + np.mean(distances2)
 
-
-# --- Brute Force Alignment with Scaling ---
-def brute_force_rotation_align_with_scaling(source_points, target_points):
-    """
-    Align source and target point clouds using scaling and brute-force rotation.
-    """
-    # Scale target points to match the source's bounding radius
-    # scaled_target_points, scale_factor = scale_target_to_source(source_points, target_points)
-    # print(f"Scale Factor Applied: {scale_factor:.6f}")
-    scaled_target_points = target_points.copy()
-    
-    # Test all combinations of 90-degree rotations
-    axes = ['x', 'y', 'z']
-    angles = [0, np.pi/2, np.pi, 3*np.pi/2]
-    best_transform = None
-    best_distance = float('inf')
-    best_rotation_combination = None
-    
-    for rx in angles:
-        for ry in angles:
-            for rz in angles:
-                # Generate rotation matrices
-                R_x = generate_rotation_matrix('x', rx)
-                R_y = generate_rotation_matrix('y', ry)
-                R_z = generate_rotation_matrix('z', rz)
-                rotation_matrix = R_z @ R_y @ R_x
-                
-                # Transform target points
-                transformed_points = transform_points(scaled_target_points, rotation_matrix)
-                distance = chamfer_distance(source_points, transformed_points)
-                
-                # Track the best alignment
-                if distance < best_distance:
-                    best_distance = distance
-                    best_transform = rotation_matrix
-                    best_rotation_combination = (rx, ry, rz)
-    
-    print(f"Best rotation: X={np.degrees(best_rotation_combination[0])}°, Y={np.degrees(best_rotation_combination[1])}°, Z={np.degrees(best_rotation_combination[2])}°")
-    print(f"Minimum Chamfer Distance: {best_distance:.6f}")
-    
-    # Apply the best transform
-    aligned_points = transform_points(target_points, best_transform)
-    return aligned_points, best_transform, best_distance
 
 def numpy_to_open3d_point_cloud(points):
     """
@@ -336,7 +302,7 @@ def process_all_meshes(gt_dir, method_dirs, output_base_dir):
     """
     Process all meshes in the ground truth directory and compare with corresponding meshes across methods.
     """
-    gt_files = glob.glob(os.path.join(gt_dir, "*.obj"))
+    gt_files = sorted(glob.glob(os.path.join(gt_dir, "*.obj")))
     if not gt_files:
         print(f"No .obj files found in ground truth directory: {gt_dir}")
         return
@@ -387,11 +353,18 @@ def process_all_meshes(gt_dir, method_dirs, output_base_dir):
                 # Perform ICP alignment
                 aligned_cloud, transform_matrix = simple_icp(target_cloud, source_cloud)
                 aligned_points = np.asarray(aligned_cloud.points)
+
+                # Combine the translation vector used during centering with the final ICP transformation
+                final_transformation_matrix = np.eye(4)
+                final_transformation_matrix[:3, :3] = transform_matrix[:3, :3]  # Rotation part
+                final_transformation_matrix[:3, 3] = transform_matrix[:3, 3] + translation_vector  # Combine translations
+
+                print(f"Final Transformation Matrix:\n{final_transformation_matrix}")
                 
                 # Compute Chamfer distance
                 chamfer_dist = chamfer_distance(gt_points, aligned_points)
                 
-                method_results[method_name] = {"chamfer_distance": chamfer_dist, "rotation_matrix": transform_matrix.tolist() if method_name == "trellis" else transform_matrix.tolist()}
+                method_results[method_name] = {"chamfer_distance": chamfer_dist, "rotation_matrix": final_transformation_matrix.tolist()}
                 
                 # Save visualization
                 visualize_path = os.path.join(mesh_output_dir, f"{method_name}_visualization.png")
@@ -405,6 +378,14 @@ def process_all_meshes(gt_dir, method_dirs, output_base_dir):
     with open(results_path, 'w') as f:
         json.dump(all_results, f, indent=4)
     print(f"Results saved to {results_path}")
+
+
+    overview = compute_method_averages(all_results)
+
+    # Save overview to JSON
+    results_path_ = os.path.join(output_base_dir, "chamfer_comparison.json")
+    with open(results_path_, 'w') as f:
+        json.dump(overview, f, indent=4)
     
     return all_results
 
@@ -412,13 +393,13 @@ def process_all_meshes(gt_dir, method_dirs, output_base_dir):
 # --- Generate Summary ---
 def generate_summary(all_results, output_dir):
     """
-    Generate a summary of all results, including a LaTeX table sorted alphabetically by mesh name.
+    Generate a summary of all results, including a LaTeX table with methods as rows and meshes as columns.
     
     Args:
-        all_results: Dictionary containing Chamfer distances and methods for all meshes.
-        output_dir: Directory to save outputs (e.g., LaTeX table).
+        all_results (dict): Dictionary containing Chamfer distances for all meshes and methods.
+        output_dir (str): Directory to save outputs (e.g., LaTeX table).
     """
-    # Extract all method names
+    # Extract all method names and mesh names
     method_names = set()
     mesh_names = list(all_results.keys())
     
@@ -426,29 +407,30 @@ def generate_summary(all_results, output_dir):
         if "methods" in mesh_results:
             method_names.update(mesh_results["methods"].keys())
     
-    # Sort method names and mesh names alphabetically
+    # Alphabetically sort mesh names and method names
     method_names = sorted(method_names)
     mesh_names = sorted(mesh_names)
-    
-    # Create a LaTeX table
+
+    # Path to save the LaTeX table
     latex_path = os.path.join(output_dir, "chamfer_summary.tex")
+    
     with open(latex_path, 'w') as f:
         # Begin the LaTeX table
         f.write("\\begin{table}[ht]\n")
         f.write("\\centering\n")
         f.write("\\caption{Chamfer Distance Comparison Across Methods}\n")
         f.write("\\label{tab:chamfer_comparison}\n")
-        f.write("\\begin{tabular}{l" + "r" * len(method_names) + "}\n")
+        f.write("\\begin{tabular}{l" + "r" * len(mesh_names) + "}\n")
         f.write("\\toprule\n")
         
         # Write column headers
-        f.write("Mesh & " + " & ".join(method_names) + " \\\\\n")
+        f.write("Methods & " + " & ".join(["\_".join(mesh_name.split("_")) for mesh_name in mesh_names]) + " \\\\\n")
         f.write("\\midrule\n")
         
-        # Write rows for each mesh
-        for mesh_name in mesh_names:
-            row = [mesh_name]
-            for method_name in method_names:
+        # Write rows for each method
+        for method_name in method_names:
+            row = [method_name]
+            for mesh_name in mesh_names:
                 if mesh_name in all_results and method_name in all_results[mesh_name].get("methods", {}):
                     chamfer_dist = all_results[mesh_name]["methods"][method_name]["chamfer_distance"]
                     row.append(f"{chamfer_dist:.6f}")
