@@ -89,7 +89,7 @@ def visualize_camera_orientations(camera_files, axis_length=1.0):
     ax.set_zlim(mid_z - max_range, mid_z + max_range)
     
     plt.tight_layout()
-    plt.show()
+    # plt.show()
     
     return fig, ax
 
@@ -803,7 +803,7 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
         print(f"  {OBJECT}_view_{view_idx+1}.png")
 
     
-def merge_instances_with_geometric_consistency(point_clouds_by_instance, instance_ids, distance_threshold=0.05, consistency_threshold=0.8):
+def merge_instances_with_geometric_consistency(point_clouds_by_instance, instance_ids, distance_threshold=0.05, consistency_threshold=0.8): # TODO: find best threshold (for drawer 0.8 looked good, for microwave lower???)
     """
     Merge instances using geometric consistency checking.
     
@@ -1753,6 +1753,63 @@ def register_point_cloud(source_points, target_points, voxel_size=0.05, max_iter
     
     return aligned_points, result_icp.transformation, result_icp.fitness, result_icp.inlier_rmse
 
+def scale_target_to_source(source_points, target_points):
+    """
+    Scale the target point cloud to match the bounding diameter of the source point cloud.
+
+    Args:
+        source_points (np.ndarray): Nx3 array of source point cloud coordinates.
+        target_points (np.ndarray): Nx3 array of target point cloud coordinates.
+    Returns:
+        scaled_target_points (np.ndarray): Nx3 array of scaled target coordinates.
+        scale_factor (float): Factor applied to scale target points.
+    """
+    print("Calculating scaling based on bounding circle")
+    # Compute bounding diameter for each point cloud
+    source_diameter = np.max(np.linalg.norm(source_points[:, None, :] - source_points[None, :, :], axis=-1))
+    target_diameter = np.max(np.linalg.norm(target_points[:, None, :] - target_points[None, :, :], axis=-1))
+    scale_factor = source_diameter / target_diameter
+    scaled_target_points = target_points * scale_factor
+    return scaled_target_points, scale_factor
+
+def simple_icp(source_cloud, target_cloud, max_correspondence_dist=100.0, max_iterations=500):
+    """
+    Perform point-to-point ICP alignment using Open3D's prebuilt function.
+
+    Args:
+        source_cloud (open3d.geometry.PointCloud): Source (moving) point cloud.
+        target_cloud (open3d.geometry.PointCloud): Target (reference) point cloud.
+        max_correspondence_dist (float): Maximum distance threshold for identifying correspondences.
+        max_iterations (int): Maximum number of ICP iterations.
+    Returns:
+        aligned_cloud (open3d.geometry.PointCloud): Aligned source cloud.
+        transformation_matrix (np.ndarray): 4x4 matrix (rotation + translation).
+    """
+    print("performing icp point-to-plane alignment")
+    # Ensure normals are computed for both clouds
+    source_cloud.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30)
+    )
+    target_cloud.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30)
+    )
+
+    # Perform ICP registration with point-to-plane method
+    result = o3d.pipelines.registration.registration_icp(
+        source_cloud,
+        target_cloud,
+        max_correspondence_dist,
+        np.identity(4),  # Initial guess (identity matrix)
+        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iterations)
+    )
+
+    # Apply transformation matrix to align source cloud
+    transformation_matrix = result.transformation
+    aligned_cloud = o3d.geometry.PointCloud()
+    aligned_cloud.points = o3d.utility.Vector3dVector(np.asarray(source_cloud.points))
+    aligned_cloud.transform(transformation_matrix)
+    return aligned_cloud, transformation_matrix
 
 def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
     """
@@ -1767,7 +1824,7 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
     Returns:
         Aligned mesh
     """
-    print("Aligning mesh to point cloud using fixed transformation...")
+    print("Aligning mesh to point cloud")
     
     # Create a copy of the mesh to transform
     aligned_mesh = mesh.copy()
@@ -1804,6 +1861,78 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
         [0, 0, 0, 1]
     ])
     aligned_mesh.apply_transform(rotation_x)
+
+    # Refine alignment with scaling and icp
+    # use 10000 sampled points for scaling
+    if len(points > 10000):
+        indices = np.random.choice(len(points), 10000, replace=False)
+        sampled_source_points = points[indices]
+    else:
+        sampled_source_points = points
+
+    if len(aligned_mesh.vertices) > 10000:
+        aligned_mesh_points = aligned_mesh.sample(10000)
+    else:
+        aligned_mesh_points = aligned_mesh.vertices
+
+    # Scale target (mesh vertices) to match source (point cloud) diameter
+    scaled_mesh_vertices, scale_factor = scale_target_to_source(sampled_source_points, aligned_mesh_points)
+
+    # Create scaling matrix
+    scaling_matrix = np.eye(4)
+    scaling_matrix[0, 0] = scale_factor
+    scaling_matrix[1, 1] = scale_factor
+    scaling_matrix[2, 2] = scale_factor
+
+    if len(points > 10000):
+        # use a larger amount of points for icp alignment
+        indices = np.random.choice(len(points), 50000, replace=False)
+        sampled_source_points = points[indices]
+        scaled_mesh_vertices = sampled_source_points * scale_factor
+        # scaled_mesh_vertices = points * scale_factor ### no sampling
+    
+    # Convert NumPy arrays to Open3D point clouds for ICP
+    source_cloud = o3d.geometry.PointCloud()
+    source_cloud.points = o3d.utility.Vector3dVector(sampled_source_points)
+    
+    target_cloud = o3d.geometry.PointCloud()
+    target_cloud.points = o3d.utility.Vector3dVector(scaled_mesh_vertices)
+    
+    # Perform ICP alignment
+    aligned_cloud, transformation_matrix = simple_icp(target_cloud, source_cloud)
+
+    # combine rototranslation and scaling
+    transformation_matrix = np.matmul(transformation_matrix, scaling_matrix)
+    
+    # Apply the resulting transformation to the mesh
+    # aligned_mesh.vertices = scaled_mesh_vertices  # First apply scaling
+    aligned_mesh.apply_transform(transformation_matrix)  # Then apply ICP transformation
+    
+    # Compute vertex normals for rendering
+    # aligned_mesh.compute_vertex_normals()
+
+    # Let trimesh handle the normals calculation safely
+    try:
+        # Use trimesh's built-in mechanisms that handle mixed face types
+        aligned_mesh.fix_normals()
+    except Exception as e:
+        print(f"Warning: Could not fix normals automatically: {str(e)}")
+        # Fall back to a simpler approach
+        try:
+            # First ensure the mesh is triangulated
+            if not aligned_mesh.is_watertight:
+                print("Mesh is not watertight, attempting to process anyway")
+            
+            # For meshes with mixed face types, get triangulated faces
+            triangles = aligned_mesh.triangles
+            if triangles is not None and len(triangles) > 0:
+                # Compute normals only if triangles are available
+                normals = trimesh.triangles.normals(triangles)
+                if len(normals) == len(aligned_mesh.faces):
+                    aligned_mesh.face_normals = normals
+        except Exception as e:
+            print(f"Warning: Could not compute normals: {str(e)}")
+            print("Visualization may have incorrect lighting")
     
     # Visualize the alignment if requested
     if visualize:
