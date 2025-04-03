@@ -681,8 +681,8 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
             # label = sanitize_filename(label)
             
             # Save figure with label in the filename
-            plt.savefig(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 
-                    dpi=300, bbox_inches='tight')
+            plt.savefig(os.path.join(output_dir, f'{OBJECT}_points_label_{label}_view_{view_idx+1}.png'), 
+        dpi=300, bbox_inches='tight')
             plt.close()
     
     # Create mesh visualization with vertex colors for each label
@@ -786,8 +786,8 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
                 ax.legend()
             
             # Save figure
-            plt.savefig(os.path.join(output_dir, f'{OBJECT}_label_{label}_view_{view_idx+1}.png'), 
-                    dpi=300, bbox_inches='tight')
+            plt.savefig(os.path.join(output_dir, f'{OBJECT}_mesh_label_{label}_view_{view_idx+1}.png'), 
+        dpi=300, bbox_inches='tight')
             plt.close()
             
             print(f"  Saved visualization for label {label}, view {view_idx+1}")
@@ -802,8 +802,150 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
     for view_idx in range(len(view_angles)):
         print(f"  {OBJECT}_view_{view_idx+1}.png")
 
+def merge_instances_with_two_pass_approach(point_clouds_by_instance, instance_ids, 
+                                          distance_threshold=0.05, consistency_threshold=0.3, # box: 0.3 consistency works well
+                                          partial_overlap_threshold=0.7):
+    # First pass: geometric consistency
+    instance_mapping, clusters = merge_instances_with_geometric_consistency(
+        point_clouds_by_instance, instance_ids, distance_threshold, consistency_threshold)
     
-def merge_instances_with_geometric_consistency(point_clouds_by_instance, instance_ids, distance_threshold=0.05, consistency_threshold=0.8): # TODO: find best threshold (for drawer 0.8 looked good, for microwave lower???)
+    # Second pass: partial containment check
+    # updated_mapping, updated_clusters = merge_with_partial_observations(
+    #     point_clouds_by_instance, instance_ids, clusters, 
+    #     distance_threshold, partial_overlap_threshold)
+    
+    # return updated_mapping, updated_clusters
+    return instance_mapping, clusters
+
+
+def merge_with_partial_observations(point_clouds_by_instance, instance_mapping, clusters, 
+                                   distance_threshold=0.05, partial_overlap_threshold=0.7):
+    """
+    Second pass to merge partial observations with more complete ones.
+    
+    Args:
+        point_clouds_by_instance: Dictionary mapping instance IDs to point clouds
+        instance_mapping: Current mapping from instance ID to representative ID
+        clusters: Existing clusters from first pass
+        distance_threshold: Distance threshold for point matching
+        partial_overlap_threshold: Threshold for considering a smaller point cloud as contained
+        
+    Returns:
+        Updated instance_mapping and updated clusters
+    """
+    from scipy.spatial import cKDTree
+    import numpy as np
+    import copy
+    
+    # Ensure instance_mapping is a dictionary
+    if not isinstance(instance_mapping, dict):
+        # Convert to dictionary if it's not already
+        instance_mapping_dict = {}
+        for i, instance_id in enumerate(instance_mapping):
+            if instance_id is not None:  # Skip None values
+                instance_mapping_dict[instance_id] = instance_mapping[instance_id]
+        instance_mapping = instance_mapping_dict
+    
+    # Create a deep copy of the instance mapping and clusters to modify
+    updated_mapping = copy.deepcopy(instance_mapping)
+    updated_clusters = copy.deepcopy(clusters)
+    
+    # Function to check if a smaller point cloud is mostly contained within a larger one
+    def check_partial_containment(smaller_pc, larger_pc, distance_threshold):
+        if len(smaller_pc) == 0 or len(larger_pc) == 0:
+            return 0.0
+            
+        # Build KD-tree for the larger point cloud
+        tree_larger = cKDTree(larger_pc)
+        
+        # Find nearest neighbors from smaller to larger
+        dist, _ = tree_larger.query(smaller_pc, distance_upper_bound=distance_threshold)
+        
+        # Count valid matches (within threshold)
+        valid_matches = np.sum(np.isfinite(dist))
+        
+        # Calculate containment ratio - how much of the smaller is contained in the larger
+        containment_ratio = valid_matches / len(smaller_pc) if len(smaller_pc) > 0 else 0
+        
+        return containment_ratio
+    
+    # Get singleton clusters (ones with only one instance)
+    singleton_clusters = [i for i, cluster in enumerate(updated_clusters) if len(cluster) == 1]
+    
+    # For each singleton cluster, check if it's a partial observation of a larger cluster
+    merged_count = 0
+    clusters_to_remove = []
+    
+    for cluster_idx in singleton_clusters:
+        if cluster_idx >= len(updated_clusters) or not updated_clusters[cluster_idx]:
+            continue  # Skip if cluster is already removed or empty
+            
+        singleton_id = updated_clusters[cluster_idx][0]
+        singleton_pc = point_clouds_by_instance[singleton_id]
+        
+        # Skip if no points
+        if len(singleton_pc) == 0:
+            continue
+        
+        best_score = 0.0
+        best_cluster_idx = None
+        
+        # Compare with all other non-singleton clusters
+        for other_idx, other_cluster in enumerate(updated_clusters):
+            if other_idx == cluster_idx or len(other_cluster) <= 1:
+                continue
+            
+            # Combine all point clouds in this cluster
+            try:
+                combined_pc = np.vstack([point_clouds_by_instance[instance_id] 
+                                        for instance_id in other_cluster
+                                        if instance_id in point_clouds_by_instance and 
+                                        len(point_clouds_by_instance[instance_id]) > 0])
+            except:
+                # Skip if there's an issue combining the point clouds
+                continue
+            
+            # If singleton is smaller, check containment
+            if len(singleton_pc) < len(combined_pc):
+                containment_score = check_partial_containment(singleton_pc, combined_pc, distance_threshold)
+                
+                if containment_score > partial_overlap_threshold and containment_score > best_score:
+                    best_score = containment_score
+                    best_cluster_idx = other_idx
+        
+        # If a good match was found, merge the singleton into that cluster
+        if best_cluster_idx is not None:
+            target_rep = updated_clusters[best_cluster_idx][0]
+            print(f"Second pass: Instance {singleton_id} merged into cluster {best_cluster_idx} (containment={best_score:.4f})")
+            
+            # Update instance mapping
+            updated_mapping[singleton_id] = target_rep
+            
+            # Move instance from singleton cluster to target cluster
+            updated_clusters[best_cluster_idx].append(singleton_id)
+            updated_clusters[cluster_idx] = []  # Empty this cluster (will be removed later)
+            
+            # Mark this cluster for removal
+            clusters_to_remove.append(cluster_idx)
+            
+            merged_count += 1
+    
+    # Remove empty clusters
+    final_clusters = [cluster for cluster in updated_clusters if cluster]
+    
+    print(f"Second pass merged {merged_count} partial instances, resulting in {len(final_clusters)} final clusters")
+    
+    # Make sure all instances in each cluster have the correct representative
+    for cluster in final_clusters:
+        if cluster:  # Only process non-empty clusters
+            rep_id = cluster[0]  # First instance is the representative
+            for instance_id in cluster:
+                updated_mapping[instance_id] = rep_id
+    
+    return updated_mapping, final_clusters
+
+    
+def merge_instances_with_geometric_consistency(point_clouds_by_instance, instance_ids, distance_threshold=0.05, consistency_threshold=0.8): # TODO: find best threshold (for drawer 0.8 looked good, for microwave lower???) box:0.5
     """
     Merge instances using geometric consistency checking.
     
@@ -1876,7 +2018,7 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
         aligned_mesh_points = aligned_mesh.vertices
 
     # Scale target (mesh vertices) to match source (point cloud) diameter
-    scaled_mesh_vertices, scale_factor = scale_target_to_source(sampled_source_points, aligned_mesh_points)
+    _, scale_factor = scale_target_to_source(aligned_mesh_points, sampled_source_points)
 
     # Create scaling matrix
     scaling_matrix = np.eye(4)
@@ -1886,53 +2028,64 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
 
     if len(points > 10000):
         # use a larger amount of points for icp alignment
-        indices = np.random.choice(len(points), 50000, replace=False)
-        sampled_source_points = points[indices]
-        scaled_mesh_vertices = sampled_source_points * scale_factor
-        # scaled_mesh_vertices = points * scale_factor ### no sampling
+        # indices = np.random.choice(len(points), 50000, replace=False)
+        # sampled_source_points = points[indices]
+        # scaled_mesh_vertices = sampled_source_points * scale_factor
+        sampled_source_points = points * scale_factor ### no sampling
+    else:
+        sampled_source_points *= scale_factor
     
     # Convert NumPy arrays to Open3D point clouds for ICP
     source_cloud = o3d.geometry.PointCloud()
     source_cloud.points = o3d.utility.Vector3dVector(sampled_source_points)
     
     target_cloud = o3d.geometry.PointCloud()
-    target_cloud.points = o3d.utility.Vector3dVector(scaled_mesh_vertices)
+    target_cloud.points = o3d.utility.Vector3dVector(aligned_mesh_points)
     
     # Perform ICP alignment
-    aligned_cloud, transformation_matrix = simple_icp(target_cloud, source_cloud)
+    aligned_cloud, transformation_matrix = simple_icp(source_cloud, target_cloud)
 
     # combine rototranslation and scaling
     transformation_matrix = np.matmul(transformation_matrix, scaling_matrix)
     
     # Apply the resulting transformation to the mesh
     # aligned_mesh.vertices = scaled_mesh_vertices  # First apply scaling
-    aligned_mesh.apply_transform(transformation_matrix)  # Then apply ICP transformation
-    
-    # Compute vertex normals for rendering
-    # aligned_mesh.compute_vertex_normals()
+    # aligned_mesh.apply_transform(transformation_matrix)  # Then apply ICP transformation
 
-    # Let trimesh handle the normals calculation safely
-    try:
-        # Use trimesh's built-in mechanisms that handle mixed face types
-        aligned_mesh.fix_normals()
-    except Exception as e:
-        print(f"Warning: Could not fix normals automatically: {str(e)}")
-        # Fall back to a simpler approach
-        try:
-            # First ensure the mesh is triangulated
-            if not aligned_mesh.is_watertight:
-                print("Mesh is not watertight, attempting to process anyway")
+    homogeneous_points = np.hstack([points, np.ones((len(points), 1))])
+    # Apply transformation
+    transformed_homogeneous_points = homogeneous_points @ transformation_matrix.T
+    # Convert back to 3D coordinates (divide by w if needed, which is the 4th column)
+    transformed_points = transformed_homogeneous_points[:, :3]
+
+    # Update the points
+    points = transformed_points
+    
+    # # Compute vertex normals for rendering
+    # # aligned_mesh.compute_vertex_normals()
+
+    # # Let trimesh handle the normals calculation safely
+    # try:
+    #     # Use trimesh's built-in mechanisms that handle mixed face types
+    #     aligned_mesh.fix_normals()
+    # except Exception as e:
+    #     print(f"Warning: Could not fix normals automatically: {str(e)}")
+    #     # Fall back to a simpler approach
+    #     try:
+    #         # First ensure the mesh is triangulated
+    #         if not aligned_mesh.is_watertight:
+    #             print("Mesh is not watertight, attempting to process anyway")
             
-            # For meshes with mixed face types, get triangulated faces
-            triangles = aligned_mesh.triangles
-            if triangles is not None and len(triangles) > 0:
-                # Compute normals only if triangles are available
-                normals = trimesh.triangles.normals(triangles)
-                if len(normals) == len(aligned_mesh.faces):
-                    aligned_mesh.face_normals = normals
-        except Exception as e:
-            print(f"Warning: Could not compute normals: {str(e)}")
-            print("Visualization may have incorrect lighting")
+    #         # For meshes with mixed face types, get triangulated faces
+    #         triangles = aligned_mesh.triangles
+    #         if triangles is not None and len(triangles) > 0:
+    #             # Compute normals only if triangles are available
+    #             normals = trimesh.triangles.normals(triangles)
+    #             if len(normals) == len(aligned_mesh.faces):
+    #                 aligned_mesh.face_normals = normals
+    #     except Exception as e:
+    #         print(f"Warning: Could not compute normals: {str(e)}")
+    #         print("Visualization may have incorrect lighting")
     
     # Visualize the alignment if requested
     if visualize:
@@ -1977,7 +2130,7 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
         else:
             plt.show()
     
-    return aligned_mesh
+    return aligned_mesh, points
 
 
 def main(OBJECT, flip_z=True):
@@ -2063,7 +2216,7 @@ def main(OBJECT, flip_z=True):
     print(f"\nLoaded mesh with {len(mesh.vertices)} vertices and {len(mesh.faces)} faces")
     
     # Align mesh to point cloud
-    aligned_mesh = align_mesh_to_point_cloud(
+    aligned_mesh, points_3d = align_mesh_to_point_cloud(
         mesh, 
         points_3d, 
         visualize=True, 
@@ -2084,13 +2237,15 @@ def main(OBJECT, flip_z=True):
         print(f"  Instance {instance_id}: {len(points_3d[mask])} points")
     
     # Merge similar instances using geometric consistency
-    print("\nMerging similar instances across views...")
-    instance_mapping, clusters = merge_instances_with_geometric_consistency(
-        point_clouds_by_instance, 
-        np.unique(instance_ids),
-        distance_threshold=0.05,  # Adjust based on your data scale
-        consistency_threshold=0.7  # Adjust based on desired strictness
-    )
+    # print("\nMerging similar instances across views...")
+    # instance_mapping, clusters = merge_instances_with_geometric_consistency(
+    #     point_clouds_by_instance, 
+    #     np.unique(instance_ids),
+    #     distance_threshold=0.05,  # Adjust based on your data scale
+    #     consistency_threshold=0.7  # Adjust based on desired strictness
+    # )
+    print("\nMerging similar instances across views with two-pass approach")
+    instance_mapping, clusters = merge_instances_with_two_pass_approach(point_clouds_by_instance, np.unique(instance_ids))
     
     # Create merged point clouds
     print("\nCreating merged point clouds for unique parts...")
