@@ -6,7 +6,32 @@ This repository provides methods for automatically modeling articulated objects 
 
 ### **Methods**
 
-#### **1. 2D to 3D Reprojection**
+#### **1. Detect Articulated Parts**
+
+**Module:** `articulate_anything/detect_articulated_parts.py`
+
+**Description:**  
+- Takes a video demonstration of the target object as input.
+- Makes a Vision-Language Model (VLM) API call to detect individual object parts.  
+**Output:**  
+- A formatted string of detected parts directly usable for part segmentation with DINO/SAM APIs.
+
+---
+
+#### **2. Mesh Segmentation with DINO-X**
+
+**Module:** `articulate_anything/mesh_seg_dino-x.py`
+
+**Description:**  
+- Takes a directory containing rendered views of the target object as input as well as the target prompt generated in step 1.  
+- Calls the DINO-X API to output segmentation masks.  
+**Output:**  
+- Segmentation masks as `.png` and `.json` files.
+
+---
+
+
+#### **3. 2D to 3D Reprojection**
 
 **Module:** `articulate_anything/2d_to_3d.py`
 
@@ -44,7 +69,57 @@ datasets/
 
 ---
 
-#### **2. Chamfer Distance Calculation**
+
+#### **4. (Optional) Convert GLB to Obj meshes**
+
+**Module:** `articulate_anything/glb_to_obj.sh`
+
+**Description:**  
+- Takes a directory containing .glb part meshes as input.  
+- Converts the meshes to .obj files and saves them to the same directory.  
+**Output:**  
+- Part meshes as `.obj` and `.mat` files.
+
+---
+
+
+#### **5. Run Articulation pipeline**
+
+**Module:** `articulate_anything/examples/generate_articulation.py`
+
+**Usage:**
+
+```bash
+cd articulate_anything
+python examples/generate_articulation.py drawer_RLBench
+```
+
+**Input:** The name of the (RLBench) object.
+
+**Expected Data Structure:**
+```
+datasets/
+   RLBench/
+      drawer_RLBench/
+         drawer_RLBench.mp4                      # Frontview input video of articulated target object
+   segmentation_masks/
+      drawer_multi-view/
+         output/
+            parts/
+               drawer_multi-view_part_1_..._.obj  # Part mesh as .obj file
+```
+
+**Description:**  
+- Takes the task name as input, expects generated part meshes in dataset directory.  
+- Performs link placement and joint articulation.  
+**Output:**  
+- URDF file of full articulated object.
+- Videos of articulation being performed on digital copy in simulation.
+
+---
+
+
+#### **6. (Bonus) Chamfer Distance Calculation**
 
 **Module:** `articulate_anything/chamfer_comparison/calculate_chamfer.py`  
 **Usage:**  
@@ -63,29 +138,6 @@ python calculate_chamfer.py --gt gt --methods Trellis hunyuan rodin --output-dir
 
 ---
 
-#### **3. Detect Articulated Parts**
-
-**Module:** `articulate_anything/detect_articulated_parts.py`
-
-**Description:**  
-- Takes a video demonstration of the target object as input.
-- Makes a Vision-Language Model (VLM) API call to detect individual object parts.  
-**Output:**  
-- A formatted string of detected parts directly usable for part segmentation with DINO/SAM APIs.
-
----
-
-#### **4. Mesh Segmentation with DINO-X**
-
-**Module:** `articulate_anything/mesh_seg_dino-x.py`
-
-**Description:**  
-- Takes a directory containing rendered views of the target object as input.  
-- Calls the DINO-X API to output segmentation masks.  
-**Output:**  
-- Segmentation masks as `.png` and `.json` files.
-
----
 
 ### **Examples**
 
