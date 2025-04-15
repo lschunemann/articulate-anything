@@ -1041,7 +1041,7 @@ def merge_instances_with_geometric_consistency(point_clouds_by_instance, instanc
 def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, output_dir, OBJECT, flip_mesh_z=False):
     """
     Segment a mesh into parts based on point labels and save each part.
-    Modified to handle string instance IDs.
+    Modified to handle string instance IDs and preserve textures.
     
     Args:
         mesh: Trimesh mesh object
@@ -1050,78 +1050,54 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
         unique_labels: Array of unique label values
         output_dir: Output directory for part meshes
         OBJECT: Object name
+        flip_mesh_z: Whether to flip the mesh Z axis
     """
-    print("\nSegmenting mesh into parts...")
-
-    # Flip mesh if needed
-    mesh_vertices = mesh.vertices
-    if flip_mesh_z:
-        mesh_vertices[:, 2] = -mesh_vertices[:, 2]
-        mesh_vertices[:, 1] = -mesh_vertices[:, 1]
-    mesh.vertices = mesh_vertices
+    import tempfile
+    from scipy.spatial import cKDTree
+    import PIL
+    import colorsys
     
-    # Build KD-tree for nearest neighbor search
+    print("\nSegmenting mesh with texture baking...")
+    
+    # Create a temporary directory
+    temp_dir = tempfile.mkdtemp(prefix="mesh_segment_")
+    print(f"Created temporary directory: {temp_dir}")
+    
+    # Make sure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Extract mesh from scene if needed
+    if isinstance(mesh, trimesh.Scene):
+        print("Input is a scene, extracting mesh...")
+        original_scene = mesh
+        mesh = next(iter(mesh.geometry.values()))
+    else:
+        mesh = mesh
+        original_scene = trimesh.Scene(mesh)
+    
+    print(f"Working with mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+    print(f"Original mesh bounds: {mesh.bounds}")
+    
+    # Process segmentation data
+    from scipy.spatial import cKDTree
     kdtree = cKDTree(segmented_points)
-    
-    # Query nearest neighbors for each mesh vertex
     distances, indices = kdtree.query(mesh.vertices)
-    
-    # Set distance threshold
     max_distance = 0.05
-    print(f"Using max distance threshold: {max_distance}")
-    
-    # Mask for vertices that are close enough to a point
     close_enough = distances < max_distance
     
-    # Create a mapping from string labels to numeric IDs for internal use
-    # This allows us to use string labels externally but numeric IDs internally
+    # Create a mapping from string labels to numeric IDs
     label_to_id = {label: i for i, label in enumerate(unique_labels)}
-    id_to_label = {i: label for i, label in enumerate(unique_labels)}
-    
-    # Convert string point labels to numeric IDs
     numeric_point_labels = np.array([label_to_id[label] for label in point_labels])
     
-    # Initialize vertex labels with -1 (unassigned)
-    vertex_labels = np.full(len(mesh.vertices), -1)  # -1 for unassigned
-    
-    # Assign numeric IDs to vertices
+    # Assign labels to vertices
+    vertex_labels = np.full(len(mesh.vertices), -1)
     vertex_labels[close_enough] = numeric_point_labels[indices[close_enough]]
-
-    print(f"vertex labels: {vertex_labels}")
-
-    # For visualization, convert back to original labels
-    vertex_label_strings = np.array([id_to_label.get(id, "unassigned") if id != -1 else "unassigned" 
-                                    for id in vertex_labels])
     
-    visualize_assignment_results(
-            mesh=mesh,
-            segmented_points=segmented_points,
-            point_labels=point_labels,
-            vertex_labels=vertex_label_strings,  # Use string labels for visualization
-            unique_labels=unique_labels,
-            distances=distances,
-            output_dir=output_dir,
-            OBJECT=OBJECT
-        )
-    
-    print(f"Found {len(np.unique(vertex_labels))} unique parts")
-
-    # Debug label distribution
-    print("Label distribution in point cloud:")
-    for label in unique_labels:
-        count = np.sum(point_labels == label)
-        print(f"  {label}: {count} points")
-        
-    print("Label distribution in mesh vertices after KNN:")
+    # For each part, create a separate mesh
     for i, label in enumerate(unique_labels):
-        count = np.sum(vertex_labels == i)  # Use numeric ID
-        print(f"  {label}: {count} vertices")
-    
-    # Create separate mesh for each label
-    for i, label in enumerate(unique_labels):
-        print(f"\nProcessing part: {label}")
+        print(f"\nProcessing part {label}...")
         
-        # Get vertices for this label using numeric ID
+        # Get vertices for this label
         vertex_mask = vertex_labels == i
         if not np.any(vertex_mask):
             print(f"No vertices found for part {label}, skipping...")
@@ -1135,25 +1111,141 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
             print(f"No faces found for part {label}, skipping...")
             continue
         
-        # Create new mesh for this part
-        part_vertices = mesh.vertices[vertex_mask]
+        # Get the selected faces
+        selected_faces = mesh.faces[face_mask]
         
-        # Create new face indices
-        old_to_new = np.cumsum(vertex_mask) - 1
-        part_faces = old_to_new[mesh.faces[face_mask]]
+        # Create a set of unique vertices used by these faces
+        unique_vertices = np.unique(selected_faces)
         
+        # Create a mapping from original vertex indices to new indices
+        old_to_new = np.full(len(mesh.vertices), -1)
+        old_to_new[unique_vertices] = np.arange(len(unique_vertices))
+        
+        # Create new vertices array with exact same 3D coordinates
+        new_vertices = mesh.vertices[unique_vertices].copy()
+        
+        # Create new faces array with remapped indices
+        new_faces = old_to_new[selected_faces]
+        
+        # Create the part mesh with explicit vertices and faces
         part_mesh = trimesh.Trimesh(
-            vertices=part_vertices,
-            faces=part_faces
+            vertices=new_vertices,
+            faces=new_faces,
+            process=False  # Don't process the mesh to preserve exact geometry
         )
         
-        # Save part mesh with instance ID in filename
-        output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.glb')
-        part_mesh.export(output_path)
-        print(f"Saved part mesh to: {output_path}")
-        print(f"Part statistics:")
-        print(f"  Vertices: {len(part_vertices)}")
-        print(f"  Faces: {len(part_faces)}")
+        print(f"Part mesh has {len(part_mesh.vertices)} vertices and {len(part_mesh.faces)} faces")
+        print(f"Part bounding box: {part_mesh.bounds}")
+        
+        # Transfer texture information if available
+        if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'uv'):
+            # Create a TextureVisuals object
+            part_mesh.visual = trimesh.visual.texture.TextureVisuals()
+            
+            # Transfer the UV coordinates
+            if len(mesh.visual.uv) == len(mesh.vertices):
+                # Vertex-based UV mapping
+                part_mesh.visual.uv = mesh.visual.uv[unique_vertices]
+                print(f"Transferred vertex-based UVs: {part_mesh.visual.uv.shape}")
+            elif len(mesh.visual.uv) == len(mesh.faces) * 3:
+                # Face-based UV mapping (per corner)
+                original_uvs = mesh.visual.uv.reshape((-1, 3, 2))
+                new_uvs = original_uvs[face_mask]
+                part_mesh.visual.uv = new_uvs.reshape((-1, 2))
+                print(f"Transferred face-based UVs: {part_mesh.visual.uv.shape}")
+            
+            # Transfer the material and texture
+            if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
+                part_mesh.visual.material = mesh.visual.material.copy()
+                print("Transferred material")
+            
+            if hasattr(mesh.visual, 'texture') and mesh.visual.texture is not None:
+                part_mesh.visual.texture = mesh.visual.texture
+                print("Transferred texture")
+        
+        # Save as GLB
+        glb_output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.glb')
+        try:
+            # Create a scene with the part mesh to preserve materials
+            part_scene = trimesh.Scene(part_mesh)
+            part_scene.export(glb_output_path)
+            print(f"Saved part mesh to: {glb_output_path}")
+            
+            # Verify the exported file
+            try:
+                test_load = trimesh.load(glb_output_path)
+                if isinstance(test_load, trimesh.Scene):
+                    test_mesh = next(iter(test_load.geometry.values()))
+                else:
+                    test_mesh = test_load
+                
+                print(f"Verified exported mesh: {len(test_mesh.vertices)} vertices, {len(test_mesh.faces)} faces")
+                print(f"Exported bounding box: {test_mesh.bounds}")
+                
+                # Check if the mesh is flat
+                bounds = test_mesh.bounds
+                dimensions = bounds[1] - bounds[0]
+                if any(dim < 0.001 for dim in dimensions):
+                    print("WARNING: Exported mesh appears to be flat!")
+            except Exception as e:
+                print(f"Warning: Could not verify exported file: {e}")
+        except Exception as e:
+            print(f"Error saving GLB: {e}")
+            
+        # Try saving as OBJ as fallback
+        obj_output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.obj')
+        try:
+            part_mesh.export(obj_output_path, include_texture=True)
+            print(f"Saved part mesh to: {obj_output_path} (fallback)")
+        except Exception as e2:
+            print(f"Error saving OBJ: {e2}")
+        
+    # except Exception as e:
+    #     print(f"Error running Blender: {e}")
+    #     print("Falling back to standard export (textures may not be preserved)")
+        
+    #     # Fall back to the original method without texture preservation
+    #     for i, label in enumerate(unique_labels):
+    #         vertex_mask = vertex_labels == i
+    #         if not np.any(vertex_mask):
+    #             continue
+                
+    #         face_has_label = vertex_mask[mesh.faces]
+    #         face_mask = face_has_label.sum(axis=1) >= 2
+            
+    #         if not np.any(face_mask):
+    #             continue
+            
+    #         # Create new mesh for this part
+    #         part_vertices = mesh.vertices[vertex_mask]
+    #         old_to_new = np.cumsum(vertex_mask) - 1
+    #         part_faces = old_to_new[mesh.faces[face_mask]]
+            
+    #         part_mesh = trimesh.Trimesh(
+    #             vertices=part_vertices,
+    #             faces=part_faces
+    #         )
+            
+    #         # Remove disconnected components
+    #         components = part_mesh.split(only_watertight=False)
+    #         if len(components) > 1:
+    #             print(f"Found {len(components)} disconnected components for part {label}")
+    #             components.sort(key=lambda m: len(m.faces), reverse=True)
+    #             part_mesh = components[0]
+    #             print(f"Kept largest component with {len(part_mesh.faces)} faces")
+            
+    #         # Save part mesh
+    #         output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.glb')
+    #         part_mesh.export(output_path)
+    #         print(f"Saved part mesh to: {output_path} (without texture)")
+    
+    # Clean up temporary directory
+    import shutil
+    try:
+        shutil.rmtree(temp_dir)
+    except:
+        print(f"Could not remove temporary directory: {temp_dir}")
+
 
 
 # The function for loading EXR depth maps
@@ -2334,33 +2426,33 @@ def main(OBJECT, flip_z=True):
             flip_mesh_z=False  # Already aligned
         )
         
-        # Also save individual part meshes with meaningful names
-        for i, instance_id in enumerate(unique_instances):
-            # Get the original label for this instance
-            instance_mask = merged_instance_ids == instance_id
-            if np.any(instance_mask):
-                instance_label = merged_labels[np.where(instance_mask)[0][0]]
+        # # Also save individual part meshes with meaningful names
+        # for i, instance_id in enumerate(unique_instances):
+        #     # Get the original label for this instance
+        #     instance_mask = merged_instance_ids == instance_id
+        #     if np.any(instance_mask):
+        #         instance_label = merged_labels[np.where(instance_mask)[0][0]]
                 
-                # Get points for this instance
-                instance_points = merged_points[instance_mask]
+        #         # Get points for this instance
+        #         instance_points = merged_points[instance_mask]
                 
-                # Create label array for these points (all same instance)
-                instance_numeric_id = label_to_id[instance_id]
-                instance_point_labels = np.full(len(instance_points), instance_numeric_id)
+        #         # Create label array for these points (all same instance)
+        #         instance_numeric_id = label_to_id[instance_id]
+        #         instance_point_labels = np.full(len(instance_points), instance_numeric_id)
                 
-                # Segment and save this part
-                part_output_dir = os.path.join(output_dir, 'parts')
-                os.makedirs(part_output_dir, exist_ok=True)
+        #         # Segment and save this part
+        #         part_output_dir = os.path.join(output_dir, 'parts')
+        #         os.makedirs(part_output_dir, exist_ok=True)
                 
-                segment_and_save_parts(
-                    mesh=aligned_mesh,
-                    segmented_points=instance_points,
-                    point_labels=instance_point_labels,
-                    unique_labels=[instance_numeric_id],
-                    output_dir=part_output_dir,
-                    OBJECT=f"{OBJECT}_{instance_label}_{i}",
-                    flip_mesh_z=False  # Already aligned
-                )
+        #         segment_and_save_parts(
+        #             mesh=aligned_mesh,
+        #             segmented_points=instance_points,
+        #             point_labels=instance_point_labels,
+        #             unique_labels=[instance_numeric_id],
+        #             output_dir=part_output_dir,
+        #             OBJECT=f"{OBJECT}_{instance_label}_{i}",
+        #             flip_mesh_z=False  # Already aligned
+        #         )
     else:
         print("No valid merged point clouds, skipping mesh segmentation.")
     
