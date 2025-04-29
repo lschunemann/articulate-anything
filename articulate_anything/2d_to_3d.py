@@ -805,120 +805,239 @@ def visualize_assignment_results(mesh, segmented_points, point_labels, vertex_la
     for view_idx in range(len(view_angles)):
         print(f"  {OBJECT}_view_{view_idx+1}.png")
 
-def merge_instances_with_two_pass_approach(mesh, point_clouds_by_instance, instance_ids, 
-                                          distance_threshold=0.05, consistency_threshold=0.3, # box: 0.3 consistency works well
-                                          partial_overlap_threshold=0.7):
+def get_detailed_merge_scores(part1, part2, mesh):
+    """
+    Calculate detailed merge scores for each criterion.
+    
+    Returns:
+        tuple: (boundary_score, continuity_score, contact_score, texture_score)
+    """
+    # Check if parts are too small for reliable analysis
+    if len(part1) < 10 or len(part2) < 10:
+        return 0.0, 0.0, 0.0, 0.5
+    
+    # Criterion 1: Check boundary smoothness
+    try:
+        boundary_score = evaluate_boundary_smoothness(part1, part2, mesh)
+    except Exception as e:
+        print(f"    Error in boundary score: {e}")
+        boundary_score = 0.0
+    
+    # Criterion 2: Check for spatial continuity
+    try:
+        continuity_score = evaluate_spatial_continuity(part1, part2)
+    except Exception as e:
+        print(f"    Error in continuity score: {e}")
+        continuity_score = 0.0
+    
+    # Criterion 3: Check for multiple contact points
+    try:
+        contact_score = evaluate_contact_points(part1, part2)
+    except Exception as e:
+        print(f"    Error in contact score: {e}")
+        contact_score = 0.0
+    
+    # Criterion 4: Check for material/texture continuity
+    try:
+        if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'uv'):
+            texture_score = evaluate_texture_continuity(part1, part2, mesh)
+        else:
+            texture_score = 0.5  # Neutral if no texture
+    except Exception as e:
+        print(f"    Error in texture score: {e}")
+        texture_score = 0.5
+    
+    return boundary_score, continuity_score, contact_score, texture_score
+
+def merge_instances_with_two_pass_approach(mesh, point_clouds_by_instance, instance_ids, point_labels,
+                                          distance_threshold=0.05, consistency_threshold=0.3,
+                                          merge_threshold=0.45, min_clusters=2):
+    """
+    Merge instances using a two-pass approach, ensuring merges only happen within same label.
+    Fixed to handle empty point clouds and prevent infinite loops.
+    """
     # First pass: geometric consistency
     instance_mapping, clusters = merge_instances_with_geometric_consistency(
         point_clouds_by_instance, instance_ids, distance_threshold, consistency_threshold)
     
-    # Second pass: partial containment check
-    # updated_mapping, updated_clusters = merge_with_partial_observations(
-    #     point_clouds_by_instance, instance_ids, clusters, 
-    #     distance_threshold, partial_overlap_threshold)
-
     print(f"First pass created {len(clusters)} clusters from {len(instance_ids)} instances")
     
     # Remove any empty clusters before second pass
     clusters = [cluster for cluster in clusters if cluster]
     
-    # Second pass: Apply multi-criteria checks for further merging
-    print("Second pass: Applying multi-criteria checks for merging...")
+    # Skip second pass if we already have min_clusters or fewer clusters
+    if len(clusters) <= min_clusters:
+        print(f"Second pass skipped - already have only {len(clusters)} clusters (minimum: {min_clusters})")
+        return instance_mapping, clusters
     
-    # Use a fixed-point algorithm: continue until no more merges happen
+    # Group clusters by label (use the label of the first instance in each cluster)
+    clusters_by_label = {}
+    for i, cluster in enumerate(clusters):
+        if not cluster:
+            continue
+            
+        # Get the label of this cluster (use first instance)
+        rep_id = cluster[0]
+        label = point_labels.get(rep_id, "unknown")
+        
+        if label not in clusters_by_label:
+            clusters_by_label[label] = []
+        clusters_by_label[label].append((i, cluster))
+    
+    print(f"Grouped {len(clusters)} clusters into {len(clusters_by_label)} label groups")
+    
+    # Second pass: Apply multi-criteria checks for merging within each label group
+    print("Second pass: Applying multi-criteria checks for merging within labels...")
+    
+    # Track which merges have been attempted to avoid infinite loops
+    attempted_merges = set()
+    
     merges_happened = True
     iteration = 0
-    max_iterations = 10  # Limit to avoid infinite loops
-    
-    # Set a threshold for merging
-    merge_threshold = 0.45  # Adjust as needed based on your experiments
+    max_iterations = 5  # Limit iterations to avoid loops
     
     while merges_happened and iteration < max_iterations:
         iteration += 1
         merges_happened = False
         
-        # IMPORTANT: Recreate the list of valid clusters at the start of each iteration
-        valid_clusters = [i for i, cluster in enumerate(clusters) if cluster]
-        
-        # Compare each pair of valid clusters
-        # Use indices to avoid modifying the list during iteration
-        i = 0
-        while i < len(valid_clusters):
-            cluster_idx_i = valid_clusters[i]
-            
-            j = i + 1
-            while j < len(valid_clusters):
-                cluster_idx_j = valid_clusters[j]
+        for label, label_clusters in clusters_by_label.items():
+            # Skip if only one cluster in this label
+            if len(label_clusters) <= 1:
+                continue
                 
-                # Get points from each cluster
-                try:
-                    points1 = np.vstack([point_clouds_by_instance[id1] 
-                                        for id1 in clusters[cluster_idx_i]
-                                        if id1 in point_clouds_by_instance and 
-                                        len(point_clouds_by_instance[id1]) > 0])
+            print(f"\nProcessing label: {label} with {len(label_clusters)} clusters")
+            
+            # Get valid clusters for this label (non-empty)
+            valid_label_clusters = [(idx, cluster) for idx, cluster in label_clusters 
+                                   if cluster]  # Check if cluster is non-empty
+            
+            # Skip if only one valid cluster
+            if len(valid_label_clusters) <= 1:
+                continue
+            
+            # Compare each pair of valid clusters within this label
+            i = 0
+            while i < len(valid_label_clusters):
+                cluster_idx_i, cluster_i = valid_label_clusters[i]
+                
+                j = i + 1
+                while j < len(valid_label_clusters):
+                    cluster_idx_j, cluster_j = valid_label_clusters[j]
                     
-                    points2 = np.vstack([point_clouds_by_instance[id2] 
-                                        for id2 in clusters[cluster_idx_j]
-                                        if id2 in point_clouds_by_instance and 
-                                        len(point_clouds_by_instance[id2]) > 0])
-                    
-                    # Skip if either collection is empty
-                    if len(points1) == 0 or len(points2) == 0:
+                    # Skip if we've already attempted this merge
+                    merge_key = (cluster_idx_i, cluster_idx_j)
+                    if merge_key in attempted_merges:
                         j += 1
                         continue
-                except Exception as e:
-                    print(f"Error combining clusters {cluster_idx_i} and {cluster_idx_j}: {e}")
-                    j += 1
-                    continue
-                
-                # Check if these clusters should be merged using multi-criteria
-                try:
-                    print(f"\nEvaluating potential merge of clusters {cluster_idx_i} ({len(clusters[cluster_idx_i])} instances) " +
-                          f"and {cluster_idx_j} ({len(clusters[cluster_idx_j])} instances)")
-                    
-                    # Use the should_merge_parts function with detailed logging
-                    should_merge = should_merge_parts(points1, points2, mesh, debug=True)
-                    merge_score = calculate_merge_score(points1, points2, mesh)
-                    
-                    # Use a stricter threshold for the actual merging decision
-                    should_merge = merge_score > merge_threshold
-                    
-                    print(f"  Final merge score: {merge_score:.4f} (threshold: {merge_threshold:.2f})")
-                    print(f"  Decision: {'MERGE' if should_merge else 'DO NOT MERGE'}")
-                    
-                    if should_merge:
-                        print(f"Multi-criteria merge: clusters {cluster_idx_i} and {cluster_idx_j}")
                         
-                        # Merge clusters: add j's instances to i
-                        clusters[cluster_idx_i].extend(clusters[cluster_idx_j])
-                        clusters[cluster_idx_j] = []  # Empty cluster j
+                    # Mark this merge as attempted
+                    attempted_merges.add(merge_key)
+                    
+                    # Get points from each cluster
+                    try:
+                        points1 = []
+                        for id1 in cluster_i:
+                            if id1 in point_clouds_by_instance and len(point_clouds_by_instance[id1]) > 0:
+                                points1.append(point_clouds_by_instance[id1])
                         
-                        # Update instance mappings
-                        rep_id = clusters[cluster_idx_i][0]  # Representative ID for the merged cluster
-                        for instance_id in clusters[cluster_idx_i]:
-                            instance_mapping[instance_id] = rep_id
+                        points2 = []
+                        for id2 in cluster_j:
+                            if id2 in point_clouds_by_instance and len(point_clouds_by_instance[id2]) > 0:
+                                points2.append(point_clouds_by_instance[id2])
                         
-                        merges_happened = True
+                        # Skip if either collection is empty
+                        if not points1 or not points2:
+                            print(f"  Skipping - empty point clouds: {len(points1)} and {len(points2)} arrays")
+                            j += 1
+                            continue
+                            
+                        # Now safely concatenate non-empty arrays
+                        points1_combined = np.vstack(points1)
+                        points2_combined = np.vstack(points2)
                         
-                        # IMPORTANT: Since we emptied cluster_idx_j, remove it from valid_clusters
-                        valid_clusters.remove(cluster_idx_j)
-                        # Don't increment j, since the valid_clusters list is now shorter
-                    else:
-                        # Only increment j if no merge happened
+                        # Skip if either concatenated cloud is empty
+                        if len(points1_combined) == 0 or len(points2_combined) == 0:
+                            print(f"  Skipping - empty combined point clouds: {len(points1_combined)} and {len(points2_combined)} points")
+                            j += 1
+                            continue
+                            
+                    except Exception as e:
+                        print(f"  Error combining clusters {cluster_idx_i} and {cluster_idx_j}: {e}")
                         j += 1
-                except Exception as e:
-                    print(f"Error evaluating merge for clusters {cluster_idx_i} and {cluster_idx_j}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    j += 1
-                    continue
-            
-            # Move to the next i
-            i += 1
+                        continue
+                    
+                    # Check if these clusters should be merged using multi-criteria
+                    try:
+                        print(f"\n  Evaluating potential merge of clusters {cluster_idx_i} ({len(cluster_i)} instances) " +
+                              f"and {cluster_idx_j} ({len(cluster_j)} instances)")
+                        
+                        # Get detailed scores and calculate merge score
+                        boundary_score, continuity_score, contact_score, texture_score = get_detailed_merge_scores(
+                            points1_combined, points2_combined, mesh)
+                            
+                        merge_score = (0.3 * boundary_score + 
+                                      0.3 * continuity_score + 
+                                      0.3 * contact_score + 
+                                      0.1 * texture_score)
+                        
+                        # Print detailed scores
+                        print(f"    Boundary: {boundary_score:.4f}, Continuity: {continuity_score:.4f}, " + 
+                              f"Contact: {contact_score:.4f}, Texture: {texture_score:.4f}")
+                        print(f"    Final merge score: {merge_score:.4f} (threshold: {merge_threshold:.2f})")
+                        
+                        # Check if merging would reduce us below min_clusters
+                        total_valid_clusters = sum(len([c for c in cl if c[1]]) 
+                                                  for cl in clusters_by_label.values())
+                        would_violate_min = (total_valid_clusters - 1) < min_clusters
+                        
+                        # Use threshold for merging decision
+                        should_merge = merge_score > merge_threshold and not would_violate_min
+                        print(f"    Decision: {'MERGE' if should_merge else 'DO NOT MERGE'}")
+                        
+                        if should_merge:
+                            print(f"  Multi-criteria merge: clusters {cluster_idx_i} and {cluster_idx_j}")
+                            
+                            # Merge clusters: add j's instances to i
+                            clusters[cluster_idx_i].extend(clusters[cluster_idx_j])
+                            clusters[cluster_idx_j] = []  # Empty cluster j
+                            
+                            # Also update the local valid_label_clusters list
+                            # Find and update cluster_j in valid_label_clusters
+                            for k in range(len(valid_label_clusters)):
+                                if valid_label_clusters[k][0] == cluster_idx_j:
+                                    valid_label_clusters[k] = (cluster_idx_j, [])
+                                    break
+                                    
+                            # Update the local cluster_i reference
+                            cluster_i = clusters[cluster_idx_i]
+                            valid_label_clusters[i] = (cluster_idx_i, cluster_i)
+                            
+                            # Update instance mappings
+                            rep_id = clusters[cluster_idx_i][0]  # Representative ID for the merged cluster
+                            for instance_id in clusters[cluster_idx_i]:
+                                instance_mapping[instance_id] = rep_id
+                            
+                            merges_happened = True
+                            
+                            # Don't increment j, just recheck with updated clusters
+                        else:
+                            # Only increment j if no merge happened
+                            j += 1
+                    except Exception as e:
+                        print(f"  Error evaluating merge for clusters {cluster_idx_i} and {cluster_idx_j}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        j += 1
+                        continue
+                
+                # Move to the next i
+                i += 1
         
         # Print status at the end of each iteration
-        print(f"  Iteration {iteration}: {len(valid_clusters)} non-empty clusters remain")
+        valid_cluster_count = len([c for c in clusters if c])
+        print(f"  Iteration {iteration}: {valid_cluster_count} clusters remain")
         
+        # Stop if we didn't make any merges this iteration
         if not merges_happened:
             print("  No more merges detected, stopping iterations")
             break
@@ -2007,16 +2126,7 @@ def evaluate_texture_continuity(part1, part2, mesh, sampling_rate=0.1, distance_
 def evaluate_boundary_smoothness(part1, part2, mesh):
     """
     Evaluate how smooth the boundary would be if parts were merged.
-    Jagged boundaries between fragments of the same part score high.
-    Clean straight boundaries between different parts score low.
-    
-    Args:
-        part1: First point cloud (Nx3 array)
-        part2: Second point cloud (Mx3 array)
-        mesh: The full mesh object
-        
-    Returns:
-        float: 0-1 score, higher means more irregular boundary (likely same part)
+    Fixed version to handle zero-length vectors properly.
     """
     import numpy as np
     from scipy.spatial import cKDTree
@@ -2131,16 +2241,21 @@ def evaluate_boundary_smoothness(part1, part2, mesh):
                     v1 = points[1] - points[0]
                     v2 = points[2] - points[1]
                     
-                    # Normalize vectors
-                    v1_norm = v1 / np.linalg.norm(v1)
-                    v2_norm = v2 / np.linalg.norm(v2)
+                    # Check for zero-length vectors
+                    v1_length = np.linalg.norm(v1)
+                    v2_length = np.linalg.norm(v2)
                     
-                    # Calculate angle using dot product
-                    dot_product = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
-                    angle = np.arccos(dot_product)
-                    
-                    # Higher angle = higher curvature
-                    curvature_values.append(angle)
+                    if v1_length > 1e-10 and v2_length > 1e-10:  # Only normalize non-zero vectors
+                        # Normalize vectors
+                        v1_norm = v1 / v1_length
+                        v2_norm = v2 / v2_length
+                        
+                        # Calculate angle using dot product
+                        dot_product = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
+                        angle = np.arccos(dot_product)
+                        
+                        # Higher angle = higher curvature
+                        curvature_values.append(angle)
                 except:
                     continue
             
@@ -2159,6 +2274,7 @@ def evaluate_boundary_smoothness(part1, part2, mesh):
             max_curvature = 0.0
     except Exception as e:
         # Fall back if path creation fails
+        print(f"    Error in boundary analysis: {e}")
         mean_curvature = 0.0
         std_curvature = 0.0
         max_curvature = 0.0
@@ -2172,7 +2288,10 @@ def evaluate_boundary_smoothness(part1, part2, mesh):
         dist = np.linalg.norm(end_point - start_point)
         
         # Check if path forms a closed loop
-        closed_loop = dist < (np.max(projected_2d, axis=0) - np.min(projected_2d, axis=0)).mean() * 0.1
+        if len(projected_2d) > 0:
+            mean_size = np.mean(np.max(projected_2d, axis=0) - np.min(projected_2d, axis=0))
+            if mean_size > 0:
+                closed_loop = dist < mean_size * 0.1
     
     # Step 3: Calculate final boundary smoothness score
     
@@ -2194,32 +2313,24 @@ def evaluate_boundary_smoothness(part1, part2, mesh):
                      0.3 * curvature_score + 
                      0.3 * variation_score) * closed_loop_factor
     
-    # Print info for debugging
-    # print(f"Boundary analysis: linearity={linearity:.3f}, curvature={mean_curvature:.3f}, " +
-    #       f"variation={std_curvature:.3f}, closed_loop={closed_loop}, score={combined_score:.3f}")
+    # Print detailed info for debugging
+    print(f"    Boundary analysis: linearity={linearity:.3f}, curvature={mean_curvature:.3f}, " +
+         f"variation={std_curvature:.3f}, closed_loop={closed_loop}, score={combined_score:.3f}")
     
     return combined_score
 
-def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, output_dir, OBJECT, flip_mesh_z=False, inverse_transform=None):
+def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, output_dir, OBJECT, flip_mesh_z=False, inverse_transform=None):
     """
-    Segment a mesh into parts based on point labels and save each part.
-    Modified to handle string instance IDs and preserve textures.
-    
-    Args:
-        mesh: Trimesh mesh object
-        segmented_points: Nx3 array of 3D points
-        point_labels: Array of labels for each point (can be strings)
-        unique_labels: Array of unique label values
-        output_dir: Output directory for part meshes
-        OBJECT: Object name
-        flip_mesh_z: Whether to flip the mesh Z axis
+    Segment a mesh into parts based on point labels and instance IDs using structure-aware segmentation.
+    Combines structure-aware segmentation with proper label handling.
     """
-    import tempfile
+    import numpy as np
+    import trimesh
     from scipy.spatial import cKDTree
-    import PIL
-    import colorsys
+    import os
+    import tempfile
     
-    print("\nSegmenting mesh with texture baking...")
+    print("\nSegmenting mesh with structure-aware approach...")
     
     # Create a temporary directory
     temp_dir = tempfile.mkdtemp(prefix="mesh_segment_")
@@ -2238,42 +2349,70 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
         original_scene = trimesh.Scene(mesh)
     
     print(f"Working with mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
-    print(f"Original mesh bounds: {mesh.bounds}")
     
-    # Process segmentation data
-    # from scipy.spatial import cKDTree
-    # kdtree = cKDTree(segmented_points)
-    # distances, indices = kdtree.query(mesh.vertices)
-    # max_distance = 0.05 # TODO: decrease threshold? original: 0.05
-    # close_enough = distances < max_distance
-    
-    # # Create a mapping from string labels to numeric IDs
-    # label_to_id = {label: i for i, label in enumerate(unique_labels)}
-    # numeric_point_labels = np.array([label_to_id[label] for label in point_labels])
-    
-    # # Assign labels to vertices
-    # vertex_labels = np.full(len(mesh.vertices), -1)
-    # vertex_labels[close_enough] = numeric_point_labels[indices[close_enough]]
-
-
-    # First analyze part structural properties
-    part_structures = analyze_part_structure(segmented_points, point_labels, unique_labels)
-
-    # Then do the structure-aware segmentation
-    vertex_labels = segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_labels)
-
-    # Finally, enforce structural constraints
-    vertex_labels = enforce_structural_constraints(mesh, vertex_labels, part_structures) # TODO: testing approach
-    
-
-    # For each part, create a separate mesh
-    for i, label in enumerate(unique_labels):
-        print(f"\nProcessing part {label}...")
-
-        # Get vertices for this label
-        vertex_mask = vertex_labels == label
+    # Create a combined label+instance identifier for each point
+    combined_identifiers = []
+    for i in range(len(point_labels)):
+        # Extract the base label without any trailing numbers
+        base_label = point_labels[i]
+        instance = instance_ids[i]
         
-        # Get faces that have all vertices with this label
+        # Create a combined identifier: label_instanceid
+        combined_id = f"{base_label}_{instance}"
+        combined_identifiers.append(combined_id)
+    
+    combined_identifiers = np.array(combined_identifiers)
+    unique_combined_ids = np.unique(combined_identifiers)
+    
+    print(f"Created {len(unique_combined_ids)} unique part identifiers:")
+    for i, part_id in enumerate(unique_combined_ids[:10]):  # Show first 10
+        count = np.sum(combined_identifiers == part_id)
+        print(f"  {part_id}: {count} points")
+    if len(unique_combined_ids) > 10:
+        print(f"  ... and {len(unique_combined_ids) - 10} more")
+        
+    # First analyze part structural properties
+    print("\nAnalyzing structural properties of parts...")
+    part_structures = analyze_part_structure(segmented_points, combined_identifiers, unique_combined_ids)
+    
+    # Then do the structure-aware segmentation
+    print("\nPerforming structure-aware segmentation...")
+    vertex_labels = segment_mesh_structure_aware(mesh, segmented_points, combined_identifiers, unique_combined_ids)
+    
+    # Finally, enforce structural constraints
+    print("\nEnforcing structural constraints...")
+    vertex_labels = enforce_structural_constraints(mesh, vertex_labels, part_structures)
+    
+    # Count assigned vertices
+    labeled_vertices = np.sum(vertex_labels != "")
+    print(f"Assigned labels to {labeled_vertices} vertices (out of {len(mesh.vertices)})")
+    
+    # Process each unique part
+    for part_id in unique_combined_ids:
+        if part_id == "":
+            continue  # Skip empty identifier
+            
+        # Split part_id into base_label and instance components
+        parts = part_id.split('_')
+        if len(parts) >= 2:
+            base_label = parts[0]
+            instance_num = parts[-1]  # Take the last part as instance number
+        else:
+            base_label = part_id
+            instance_num = "0"
+        
+        print(f"\nProcessing part: {part_id} (label={base_label}, instance={instance_num})")
+        
+        # Get vertices with this part identifier
+        vertex_mask = vertex_labels == part_id
+        
+        print(f"Found {np.sum(vertex_mask)} vertices with part identifier '{part_id}'")
+        
+        if not np.any(vertex_mask):
+            print(f"No vertices found for part {part_id}, skipping...")
+            continue
+            
+        # Get faces that have all vertices with this part label
         face_has_label = vertex_mask[mesh.faces]
         face_mask = np.all(face_has_label, axis=1)
         
@@ -2281,18 +2420,8 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
         majority_mask = np.sum(face_has_label, axis=1) >= 2
         face_mask = face_mask | majority_mask
         
-        # # Get vertices for this label
-        # vertex_mask = vertex_labels == i
-        # if not np.any(vertex_mask):
-        #     print(f"No vertices found for part {label}, skipping...")
-        #     continue
-            
-        # # Get faces that have majority of vertices with this label
-        # face_has_label = vertex_mask[mesh.faces]
-        # face_mask = face_has_label.sum(axis=1) >= 2  # At least 2 of 3 vertices have the label
-        
         if not np.any(face_mask):
-            print(f"No faces found for part {label}, skipping...")
+            print(f"No faces found for part {part_id}, skipping...")
             continue
         
         # Get the selected faces
@@ -2336,7 +2465,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
                 original_uvs = mesh.visual.uv.reshape((-1, 3, 2))
                 new_uvs = original_uvs[face_mask]
                 part_mesh.visual.uv = new_uvs.reshape((-1, 2))
-                print(f"Transferred face-based UVs: {part_mesh.visual.uv.shape}")
+                print(f"Transferred face-based UVs: {new_uvs.shape}")
             
             # Transfer the material and texture
             if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
@@ -2353,7 +2482,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
             part_mesh.apply_transform(inverse_transform)
             print("Applied inverse transformation to restore original orientation")
         else:
-            theta = np.radians(-90)  # -90 degrees in radians
+            theta = np.radians(-90)  # -90 box, +90 laptop & drawer
             rot_z_neg90 = np.array([
                 [np.cos(theta), -np.sin(theta), 0, 0],
                 [np.sin(theta), np.cos(theta), 0, 0],
@@ -2364,8 +2493,14 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
             part_mesh.apply_transform(rot_z_neg90)
             print(f'Applied {theta} degree rotation around z axis manually')
         
+        # Sanitize filename
+        safe_label = base_label.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_').replace(' ', '_')
+        
+        # Create filename with label and instance number
+        filename = f"{safe_label}_{instance_num}"
+        
         # Save as GLB
-        glb_output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.glb')
+        glb_output_path = os.path.join(output_dir, f'{OBJECT}_{filename}.glb')
         try:
             # Create a scene with the part mesh to preserve materials
             part_scene = trimesh.Scene(part_mesh)
@@ -2393,52 +2528,13 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, unique_labels, 
         except Exception as e:
             print(f"Error saving GLB: {e}")
             
-        # Try saving as OBJ as fallback
-        obj_output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.obj')
+        # Try saving as OBJ
+        obj_output_path = os.path.join(output_dir, f'{OBJECT}_{filename}.obj')
         try:
             part_mesh.export(obj_output_path, include_texture=True)
-            print(f"Saved part mesh to: {obj_output_path} (fallback)")
+            print(f"Saved part mesh to: {obj_output_path}")
         except Exception as e2:
             print(f"Error saving OBJ: {e2}")
-        
-    # except Exception as e:
-    #     print(f"Error running Blender: {e}")
-    #     print("Falling back to standard export (textures may not be preserved)")
-        
-    #     # Fall back to the original method without texture preservation
-    #     for i, label in enumerate(unique_labels):
-    #         vertex_mask = vertex_labels == i
-    #         if not np.any(vertex_mask):
-    #             continue
-                
-    #         face_has_label = vertex_mask[mesh.faces]
-    #         face_mask = face_has_label.sum(axis=1) >= 2
-            
-    #         if not np.any(face_mask):
-    #             continue
-            
-    #         # Create new mesh for this part
-    #         part_vertices = mesh.vertices[vertex_mask]
-    #         old_to_new = np.cumsum(vertex_mask) - 1
-    #         part_faces = old_to_new[mesh.faces[face_mask]]
-            
-    #         part_mesh = trimesh.Trimesh(
-    #             vertices=part_vertices,
-    #             faces=part_faces
-    #         )
-            
-    #         # Remove disconnected components
-    #         components = part_mesh.split(only_watertight=False)
-    #         if len(components) > 1:
-    #             print(f"Found {len(components)} disconnected components for part {label}")
-    #             components.sort(key=lambda m: len(m.faces), reverse=True)
-    #             part_mesh = components[0]
-    #             print(f"Kept largest component with {len(part_mesh.faces)} faces")
-            
-    #         # Save part mesh
-    #         output_path = os.path.join(output_dir, f'{OBJECT}_part_{label}.glb')
-    #         part_mesh.export(output_path)
-    #         print(f"Saved part mesh to: {output_path} (without texture)")
     
     # Clean up temporary directory
     import shutil
@@ -3544,8 +3640,23 @@ def main(OBJECT, flip_z=True):
     #     distance_threshold=0.05,  # Adjust based on your data scale
     #     consistency_threshold=0.7  # Adjust based on desired strictness
     # )
+    
+    # Create a mapping from instance IDs to their labels
+    print("Creating instance-to-label mapping...")
+    instance_to_label = {}
+
+    # First, create arrays with unique instance IDs and their first occurrences
+    unique_instance_ids, unique_indices = np.unique(instance_ids, return_index=True)
+
+    # Use these indices to efficiently get the corresponding labels
+    for i, idx in enumerate(unique_indices):
+        instance_id = instance_ids[idx]
+        instance_label = labels[idx]
+        instance_to_label[instance_id] = instance_label
+        
+
     print("\nMerging similar instances across views with two-pass approach")
-    instance_mapping, clusters = merge_instances_with_two_pass_approach(aligned_mesh, point_clouds_by_instance, np.unique(instance_ids))
+    instance_mapping, clusters = merge_instances_with_two_pass_approach(aligned_mesh, point_clouds_by_instance, np.unique(instance_ids),point_labels=instance_to_label, min_clusters=len(np.unique(labels)))
     
     # Create merged point clouds
     print("\nCreating merged point clouds for unique parts...")
@@ -3627,8 +3738,9 @@ def main(OBJECT, flip_z=True):
         segment_and_save_parts(
             mesh=aligned_mesh,
             segmented_points=merged_points,
-            point_labels=numeric_instance_ids,
-            unique_labels=list(range(len(unique_instances))),
+            point_labels=merged_labels,  # Pass the semantic labels
+            instance_ids=merged_instance_ids,  # Pass the instance IDs
+            # unique_labels=np.unique(merged_instance_ids),
             output_dir=output_dir,
             OBJECT=OBJECT,
             flip_mesh_z=False,  # Already aligned
