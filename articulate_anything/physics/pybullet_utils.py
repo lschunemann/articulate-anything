@@ -212,40 +212,39 @@ def raise_link_above_ground(
 
 
 def setup_pybullet(
-    urdf_file: str, headless: bool = True, reset_joints: bool = False,
+    urdf_file: str, headless: bool = True, reset_joints: bool = False, rotation_pose: Optional[Dict[str, float]] = None,
 ) -> Tuple[int, int]:
-    """Sets up the PyBullet simulation with a robot loaded from a URDF file.
-
-    Args:
-        urdf_file (str): Path to the URDF file of the robot.
-        headless (bool): If True, connects to PyBullet in DIRECT mode; otherwise, GUI mode.
-        reset_joints (bool): If True, resets all manipulatable joints to their lower limits.
-
-    Returns:
-        Tuple[int, int]: A tuple containing the physics client ID and the robot ID.
-    """
+    """Sets up the PyBullet simulation with a robot URDF and rotates it globally using cfg rotation_pose."""
     physics_client = connect_pybullet(headless=headless)
 
     # Load the plane and robot URDF
     plane_id = p.loadURDF("plane.urdf")
-    logging.debug(f"Loading urdf_file: {urdf_file}")
-    # suppressing pybullet annoying prints
+    logging.info(f"Loading URDF file: {urdf_file}")
     with HideOutput():
         robot_id = p.loadURDF(urdf_file)
 
+        # rotation_pose = None
+        # # logging.info(f"rotation needed for urdf: {rotation_pose}")
+        # # Rotate the robot using the rotation parameters from cfg
+        # if rotation_pose is not None:
+        #     # Extract rotation from the configuration
+        #     rx, ry, rz = rotation_pose.get("rx", 0), rotation_pose.get("ry", 0), rotation_pose.get("rz", 0)
+        #     orientation = p.getQuaternionFromEuler([rx, ry, rz])  # Convert Euler angles to quaternion
+        #     position = [0, 0, 0]  # Original position
+        #     p.resetBasePositionAndOrientation(robot_id, position, orientation)
+        #     # logging.info(f"Rotated robot with [rx, ry, rz]: [{rx}, {ry}, {rz}]")
+
+    # Proceed with other setup
     raise_distances = []
-    # Raise the robot links above the ground
     for link_index in range(p.getNumJoints(robot_id)):
         raise_distance = raise_link_above_ground(robot_id, link_index)
         raise_distances.append(raise_distance)
 
+    # Save raise distances
     raise_distance_file = join_path(
-        os.path.dirname(urdf_file), "raise_distances.json")
-
-    save_json(
-        raise_distances,
-        raise_distance_file,
+        os.path.dirname(urdf_file), "raise_distances.json"
     )
+    save_json(raise_distances, raise_distance_file)
 
     if reset_joints:
         manipulatable_joints = get_manipulatable_joints(

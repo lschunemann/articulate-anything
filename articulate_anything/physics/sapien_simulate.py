@@ -67,6 +67,7 @@ def make_floor(floor_texture, scene, renderer):
 
 
 def setup_sapien(cfg):
+    """Sets up the SAPIEN simulation and applies rotation using cfg rotation_pose."""
     if cfg.ray_tracing:
         sapien.render_config.camera_shader_dir = "rt"
         sapien.render_config.viewer_shader_dir = "rt"
@@ -85,39 +86,27 @@ def setup_sapien(cfg):
     robot = loader.load_kinematic(cfg.urdf.file)
     assert robot, "URDF not loaded."
 
-    if cfg.urdf.raise_distance_file is None:
-        cfg.urdf.raise_distance_file = join_path(
-            os.path.dirname(cfg.urdf.file), "raise_distances.json")
+    # Rotate the robot globally using the configuration
+    rotation_pose = cfg.urdf.rotation_pose
+    rx, ry, rz = rotation_pose.get("rx", 0), rotation_pose.get("ry", 0), rotation_pose.get("rz", 0)
+    rotation = R.from_euler('xyz', [rx, ry, rz])  # Create rotation from Euler angles
+    quat = rotation.as_quat()  # Get quaternion from scipy rotation
 
-    if not os.path.exists(cfg.urdf.raise_distance_file):
-        # NOTE: Couldn't figure out how to correctly compute the raise distance
-        # in sapien so we'll use pybullet to compute it
-        client, robot_id = setup_pybullet(
-            cfg.urdf.file)
-        cfg.urdf.raise_distance_file = join_path(
-            os.path.dirname(cfg.urdf.file), "raise_distances.json")
-        p.disconnect(client)
-
-    if not os.path.exists(cfg.urdf.raise_distance_file):
-        logging.error("Failed to generate raise distance file during setup_pybullet.")
-    raise_distance = load_json(cfg.urdf.raise_distance_file)
-    # Apply rotation and translation
-    rotation = R.from_euler('xyz', [
-                            cfg.urdf.rotation_pose.rx, cfg.urdf.rotation_pose.ry, cfg.urdf.rotation_pose.rz])
-    quat = rotation.as_quat()  # [x, y, z, w]
-    # Sapien convention: wxyz
-    quat = [quat[3], quat[0], quat[1], quat[2]]
-
+    # SAPIEN uses wxyz quaternion format
     pose = sapien.Pose(
-        p=[0, 0, max(raise_distance) + cfg.urdf.raise_distance_offset],
-        q=quat,
+        p=[0, 0, cfg.urdf.raise_distance_offset],
+        # q = [1,0,0,0]
+        q=[quat[3], quat[0], quat[1], quat[2]]  # Convert quaternion to wxyz format
     )
     robot.set_pose(pose)
+    logging.info(f"Rotated robot globally with quaternion: {pose.q}")
 
+    # Setup floor and lights
     make_floor(cfg.floor_texture, scene, renderer)
     scene.set_ambient_light(cfg.lighting.ambient)
     scene.add_directional_light(
-        cfg.lighting.directional.direction, cfg.lighting.directional.color)
+        cfg.lighting.directional.direction, cfg.lighting.directional.color
+    )
 
     return engine, scene, robot
 
