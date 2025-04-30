@@ -205,7 +205,9 @@ if __name__ == "__main__":
     #text_prompt = "frame. left sliding door. right sliding door."
     #text_prompt = "body. top drawer. center drawer. lower drawer."
     #text_prompt = "body. top drawer. center drawer. lower drawer."
-    text_prompt = "glass jar. lid."
+    # text_prompt = "glass jar. lid."
+    # text_prompt = "cabinet. sliding door." # cabinet
+    text_prompt = "hinge joint.  mounting plate.  handle." # washing machine
     # text_prompt = "Top drawer. Middle drawer. Bottom drawer. Drawer base."
     # text_prompt = detect_articulated_parts()
     
