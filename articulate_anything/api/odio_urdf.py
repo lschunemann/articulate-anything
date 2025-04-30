@@ -32,6 +32,7 @@ from articulate_anything.utils.utils import (
     save_json,
     load_json,
 )
+from articulate_anything.utils import global_config
 from articulate_anything.physics.pybullet_utils import (
     setup_pybullet,
     get_aabb,
@@ -45,10 +46,10 @@ def pybullet_session(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         # Setup PyBullet
+        cfg = global_config.get_config()
         tmp_file = join_path(self.input_dir, "temp_robot.urdf")
         string_to_file(str(self), tmp_file)
-        client, robot_id = setup_pybullet(tmp_file, headless=True,
-                                          )
+        client, robot_id = setup_pybullet(tmp_file, headless=True, rotation_pose=cfg.urdf.rotation_pose)
 
         try:
             # Execute the function
@@ -1895,7 +1896,11 @@ def print_urdf_tree(root, tree, indent=""):
 
 def get_semantic_name_of_link(link_name, obj_id, 
                               dataset_dir="datasets/partnet-mobility-v0/dataset/"):
-    input_dir = join_path(dataset_dir, obj_id)
+    cfg = global_config.get_config()
+    if cfg.modality == 'generated':
+        input_dir = join_path(input_dir, cfg.task)
+    else:
+        input_dir = join_path(dataset_dir, obj_id)
     semantic_file = join_path(input_dir, "semantics.txt")
     link_semantics = load_semantic(semantic_file)
     return link_semantics.get(link_name, link_name)
@@ -1909,7 +1914,11 @@ def extract_joint_data_and_stats(
     joint_data = {}  # Dictionary to store counts and joint IDs per type
     
     for obj_id in obj_ids:
-        file_path = join_path(dataset_dir, obj_id, "mobility.urdf")
+        cfg = global_config.get_config()
+        if cfg.modality == 'generated':
+            file_path = join_path(dataset_dir, cfg.task, "mobility.urdf")
+        else:
+            file_path = join_path(dataset_dir, obj_id, "mobility.urdf")
         joints_data = extract_joint_data(file_path)
         obj_joint_data = {}
         joint_type_json = {}
@@ -1951,7 +1960,11 @@ def get_joint_semantic(obj_dir):
         # Extract without using semantic IDs to avoid recursion
         obj_id = obj_dir.split("/")[-1]
         file_path = join_path(obj_dir, "mobility.urdf")
-        joints_data = extract_joint_data(file_path)
+        cfg = global_config.get_config()
+        if cfg.modality == 'generated':
+            joints_data = extract_joint_data(join_path(os.path.dirname(obj_dir), cfg.task, 'mobility.urdf'))
+        else:
+            joints_data = extract_joint_data(file_path)
         
         # Generate semantic IDs directly
         obj_joint_data = {}
@@ -1969,6 +1982,9 @@ def get_joint_semantic(obj_dir):
 
 def extract_joint_data(file_path, include_semantic_names=False):
     """Extract joint types and IDs from a URDF file."""
+    # cfg = global_config.get_config()
+    # if file_path.split('/')[-2] != cfg.task:
+    #     file_path = join_path('/'.join(file_path.split('/')[:-2]), cfg.task, "mobility.urdf")
     try:
         tree = ET.parse(file_path)
         root = tree.getroot()
@@ -2029,13 +2045,23 @@ def get_semantic_joint_id(
     cached=True,
 ):
     if file_path is None:
-        file_path = join_path(dataset_dir, obj_id, "mobility.urdf")
+        cfg = global_config.get_config()
+        if cfg.modality == 'generated':
+            file_path = join_path(dataset_dir, cfg.task, "mobility.urdf")
 
-    if cached and os.path.exists(join_path(dataset_dir, obj_id, "joint_semantics.json")):
-        joint_semantics = load_json(
-            join_path(dataset_dir, obj_id, "joint_semantics.json")
-        )
-        return joint_semantics.get(joint_id, None)
+            if cached and os.path.exists(join_path(dataset_dir, cfg.task, "joint_semantics.json")):
+                joint_semantics = load_json(
+                    join_path(dataset_dir, cfg.task, "joint_semantics.json")
+                )
+                return joint_semantics.get(joint_id, None)
+        else:
+            file_path = join_path(dataset_dir, obj_id, "mobility.urdf")
+
+            if cached and os.path.exists(join_path(dataset_dir, obj_id, "joint_semantics.json")):
+                joint_semantics = load_json(
+                    join_path(dataset_dir, obj_id, "joint_semantics.json")
+                )
+                return joint_semantics.get(joint_id, None)
 
     joints_data = extract_joint_data(file_path)
     return get_semantic_joint_id_core(
@@ -2052,7 +2078,11 @@ def get_joint_id(
     cached=True,
 ):
     if file_path is None:
-        file_path = join_path(input_dir, obj_id, "mobility.urdf")
+        cfg = global_config.get_config()
+        if not cfg.modality == 'generated':
+            file_path = join_path(input_dir, obj_id, "mobility.urdf")
+        else:
+            file_path = join_path(input_dir, cfg.task, "mobility.urdf")
 
     # Try to use cached data if available
     if cached:
@@ -2086,7 +2116,10 @@ def get_semantic_joint_from_child_name(
     cached=True,
 ):
     if file_path is None:
-        file_path = join_path(dataset_dir, obj_id, "mobility.urdf")
+        if cfg.modality == 'generated':
+            file_path = join_path(dataset_dir, cfg.task, "mobility.urdf")
+        else:
+            file_path = join_path(dataset_dir, obj_id, "mobility.urdf")
 
     if cached and os.path.exists(join_path(dataset_dir, obj_id, "joint_semantics.json")):
         joint_semantics = load_json(
@@ -2095,8 +2128,11 @@ def get_semantic_joint_from_child_name(
         for joint_id, semantic_joint in joint_semantics.items():
             if semantic_joint.endswith(f"to_{child_part_name}"):
                 return semantic_joint
-
-    joints_data = get_joint_semantic(join_path(dataset_dir, obj_id))
+    cfg = global_config.get_config()
+    if cfg.modality == 'generated':
+        joints_data = get_joint_semantic(join_path(dataset_dir, cfg.task))
+    else:
+        joints_data = get_joint_semantic(join_path(dataset_dir, obj_id))
     for joint_id, semantic_joint in joints_data.items():
         if semantic_joint.endswith(f"to_{child_part_name}"):
             return semantic_joint

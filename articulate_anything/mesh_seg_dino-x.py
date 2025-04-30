@@ -126,9 +126,15 @@ if __name__ == "__main__":
     input_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/output_views/{args.object}"
     output_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/segmentation_masks/{args.object}"
     # text_prompt = "top surface.  leg.  frame.  handle.  drawer." # drawer
-    text_prompt = "display window.  main body/housing.  control panel.  handle.  door." # microwave
-     # laptop
-    api_token = os.environ.get("DINO_X_API_KEY") #"1c9a49043bb8d909075526295bb20fc4"
+    # text_prompt = "display window.  main body/housing.  control panel.  handle.  door." # microwave
+    # text_prompt = "lid. base. wooden stand." # laptop --- problem with base
+    # text_prompt = "main chamber. lid. chimney. firebox. grate. wheels." # grill
+    # text_prompt = "lid. base." # box
+    # text_prompt = "red cylinder. lid." # jar
+    # text_prompt = "toilet bowl. toilet lid. toilet seat." # toilet
+    # text_prompt = "hinge joint.  mounting plate.  handle." # washing machine
+    text_prompt = "cabinet. sliding door." # cabinet TODO: out of quota
+    api_token = os.environ.get("API_KEY")
     
     
     process_multiple_views(input_dir, text_prompt, output_dir, api_token)

@@ -17,6 +17,27 @@ imgui.ini
 partnet_mobility_embeddings.csv
 
 
+phystwin_alignment/models/weights/*
+
+# test functions
+identify_base_test.py
+camera_axes.png
+articulate_anything/debug_pybullet_urdf.py
+articulate_anything/remove_robot_arm.py
+articulate_anything/test_simulations.py
+
+articulate_anything/chamfer_comparison/Trellis/
+articulate_anything/chamfer_comparison/align_mesh_test.py
+articulate_anything/chamfer_comparison/gt/
+articulate_anything/chamfer_comparison/hunyuan/
+articulate_anything/chamfer_comparison/rodin/
+
+DepthCamera_2025-02-26-17-22-31.json
+
 *.zip
 *scans
 *.pkl
+*.glb
+*.obj
+*.mtl
+*.png

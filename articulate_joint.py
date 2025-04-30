@@ -158,7 +158,11 @@ def process_visual(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> D
 def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> DictConfig:
     """
     """
-
+    if not hasattr(cfg, 'video_path'):
+        cfg.video_path = prompt 
+    cfg.prompt = join_path(
+        os.path.dirname(cfg.prompt), f"{os.path.basename(cfg.prompt)}")
+    logging.info(f"cfg.prompt: {cfg.prompt}")
     return cfg
 
 
@@ -183,10 +187,15 @@ def actor_function(iteration: int, seed: int, cfg: DictConfig,
     joint_actor = make_joint_actor(cfg)(create_task_config(cfg, join_path(
         "joint_actor", f"iter_{iteration}", f"seed_{seed}"))
     )
-    joint_actor.generate_prediction(gt_input=cfg.video_path, #cfg.prompt
+    # Use cfg.video_path directly for consistency
+    video_path = cfg.video_path if hasattr(cfg, 'video_path') else prompt
+    joint_actor.generate_prediction(video_path,#cfg.prompt,# cfg.video_path, #
                                     **retry_kwargs, **cfg.gen_config)
+    logging.info("Start rendering prediction")
     joint_actor.render_prediction(gpu_id)
+    logging.info("Successfully rendered prediction")
     video = joint_actor.load_predicted_rendering()
+    logging.info("Successfully loaded joint prediction")
 
     if cfg.modality != "text" and cfg.joint_actor.targetted_affordance:
         gt_joint_diff = joint_actor.compute_gt_diff()
@@ -205,14 +214,15 @@ def is_actor_only(cfg):
     return cfg.actor_critic.actor_only if isinstance(cfg.actor_critic.actor_only, bool) else cfg.modality != "video"
 
 def critic_function(iteration: int, seed: int, cfg: DictConfig, prompt: str, actor_result: Dict[str, Any]) -> Dict[str, Any]:
-    if is_actor_only(cfg):
+    cfg.prompt = cfg.video_path
+    if is_actor_only(cfg):# or cfg.modality == 'generated': # TODO: failed to read URDF with critic for generated mesh
         return {
             "feedback_score": 10
         }
     joint_critic = make_joint_critic(cfg)(create_task_config(cfg, join_path(
         "joint_critic", f"iter_{iteration}", f"seed_{seed}"))
     )
-    joint_critic.generate_prediction(gt_video_path=cfg.prompt,
+    joint_critic.generate_prediction(gt_video_path=cfg.video_path,#cfg.prompt,
                                      **actor_result, **cfg.gen_config)
     feedback = joint_critic.load_prediction()
     if cfg.joint_actor.targetted_affordance:

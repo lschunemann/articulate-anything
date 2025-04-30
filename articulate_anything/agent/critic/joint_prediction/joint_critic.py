@@ -37,20 +37,37 @@ Compare these videos and provide feedback on the prediction. Use this format:
 }
 ```
 
+IMPORTANT: Your primary task is to evaluate what you SEE in the videos. The candidate function is secondary information to help confirm your visual analysis, NOT the primary source of evaluation.
+
 Be concise and specific. When writing the description, compare the predicted video to the ground truth and analyze the `candidate_function` to identify issues.
 
 Important points:
 
 - Evaluate only the joint prediction, not link placement.
+- ALWAYS prioritize what you observe in the videos over what the code suggests. If the code looks correct but the video shows clear issues, trust your visual observation.
+- CAREFULLY CHECK THE AXIS OF ROTATION OR TRANSLATION in both videos. Joint axis errors are common and must be detected.
 - Compare videos first, then examine the candidate function.
 - Rate highly if the prediction closely matches the ground truth.
 - Identify problems using this checklist, focusing on the most significant error:
   1. Incorrect joint type (e.g., revolute instead of prismatic): Rate 0
   2. Wrong joint axis (e.g., x-axis instead of y-axis): Rate 1
+    - Carefully compare the axis of rotation/translation between ground truth and prediction
+    - If a door opens sideways in the prediction but opens upward in ground truth, this is a joint axis error
+    - If rotation occurs around a different axis (e.g., z-axis vs x-axis), this is a joint axis error
+    - NEVER give a rating above 1 if the joint axis is incorrect
   3. Incorrect joint origin (for **revolute joints** only): Rate 2
-  4. Incorrect joint limit (for **revolute joints** only; e.g, the door is opening inward instead of outward): Rate 3
+    - Look for unnatural separation/gap between parts that should remain connected
+    - Check if the rotation point is in the wrong location
+    - NEVER give a rating above 2 if the joint origin in incorrect
+  4. Incorrect joint limit (for **revolute joints** only): Rate 3
+    - This includes cases where the part rotates in the wrong direction (e.g., a door opening outward when it should open inward)
+    - This includes cases where the part opens too far or not far enough
+    - Pay special attention to the direction of movement and compare it precisely to the ground truth
+    - NEVER give a rating above 3 if the rotation direction is wrong
   5. No errors: Rate above 5, mark as "success"
 - Your `realism_rating` must match the `failure_reason` according to the ratings specified above.
+- NEVER give a rating of 10 unless the prediction matches the ground truth perfectly in all aspects, including direction of movement.
+- Before finalizing your rating, double-check that it aligns with the failure_reason you identified.
 - Joint axis order is [x, y, z]: 
     - x : forward -- positive x, backward -- negative x
     - y: right -- positive y, left -- negative y
@@ -256,10 +273,22 @@ class JointCriticMultiModalExamples(InContextExampleModel, JointCritic):
             # input_dir=os.path.dirname(self.cfg.dataset_dir),
         )
 
+        # TODO: actually deal with None values for semantic_join_id. For example, still get closest looking object from partnet
+        # Fallback to joint_id if semantic_joint_id is None
+
+        # logging.info(f"joint id: {joint_id}")
+        # logging.info(f"semantics joint id: {semantic_joint_id}")
+        if not semantic_joint_id:
+            semantic_joint_id = joint_id
+
+
         gt_video_name = (
             f"{'aug_' if self.cfg.joint_critic.use_cotracker else ''}video_{joint_id}_{self.cfg.cam_view}.mp4"
         )
         pred_video_name = f"{'aug_' if self.cfg.joint_critic.use_cotracker else ''}video_{semantic_joint_id}_{self.cfg.cam_view}.mp4"
+
+        # logging.info(f"gt video name: {gt_video_name}")
+        # logging.info(f"pred video name: {pred_video_name}")
 
         candidate_function_path = join_path(example_path, "joint_pred.py")
         expected_joint_critic_path = join_path(
@@ -267,6 +296,9 @@ class JointCriticMultiModalExamples(InContextExampleModel, JointCritic):
 
         gt_video_path = join_path(example_path, gt_video_name)
         pred_video_path = join_path(example_path, pred_video_name)
+
+        # logging.info(f"gt video path: {gt_video_path}")
+        # logging.info(f"pred video path: {pred_video_path}")
 
         return {
             "candidate_function_path": candidate_function_path,

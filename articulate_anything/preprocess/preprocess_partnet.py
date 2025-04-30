@@ -82,6 +82,27 @@ def rotate_urdf(urdf_file: str):
         robot.rotate_joint(joint.name, axis="y", angle_degree=angle_degree)
         string_to_file(str(robot), urdf_file)
 
+def render_generated_obj(gpu_id: str, cfg: DictConfig, render_mode: str = "move", urdf_file: Optional[str] = None):
+    """
+    Render a generated object
+
+    :param gpu_id: GPU ID to use for rendering
+    :param cfg: Configuration object
+    :param render_mode: 'stationary' for photo rendering, 'move' for joint movement rendering
+    :param urdf_file: Optional path to URDF file. If not provided, it will be derived from obj_id
+    """
+    obj_dir = join_path(cfg.dataset_dir, cfg.task)
+    if urdf_file is None:
+        urdf_file = get_urdf_file(obj_dir)
+
+    simulator_cfg = OmegaConf.create(cfg.simulator)
+    # if get_obj_type(obj_id) == "Chair":
+    #     simulator_cfg.urdf.raise_distance_offset = 0.15
+
+    rotate_urdf(urdf_file)
+    render_object(urdf_file, gpu_id, simulator_cfg, render_mode)
+    combine_meshes(obj_dir)
+
 
 def render_parts(obj_id: str, gpu_id: str, cfg: DictConfig):
     """
@@ -131,7 +152,8 @@ def preprocess_objects(cfg: DictConfig):
         "video": lambda obj_id, gpu_id, cfg: render_partnet_obj(obj_id, gpu_id, cfg, render_mode="stationary"),
         # "video": lambda obj_id, gpu_id, cfg: render_partnet_obj(obj_id, gpu_id, cfg, render_mode="move"),
         "partnet": preprocess_partnet_object,
-        "generated": render_parts,
+        # "generated": render_parts,
+        "generated": lambda gpu_id, cfg: render_generated_obj(gpu_id, cfg, render_mode='stationary')
     }.get(cfg.modality)
 
     if process_function:
