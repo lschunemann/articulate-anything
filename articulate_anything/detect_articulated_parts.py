@@ -73,7 +73,7 @@ def identify_movable_parts(video_path):
     (1) Do not answer anything not asked.
     (2) Your answer should be purely based on the input video, do not imagine anything.
     (3) If there are multiple parts with the same semantic, just add one part to the list. For example, if there are four wheels, just add one part whose name is wheel.
-    
+    (4) Your onswer has to be based on the object being manipulated. If there is a robotic or a human arm interacting with the object, ignore it and just describe the object.
     """
 
     content = make_prompt(video_path)
@@ -142,7 +142,7 @@ def format_result_str(str_response):
         for part_whole in str_response.split('\n'):
             print(part_whole)
             part_, desc = part_whole.split(';')
-            part = part_.split(':')[0]
+            part = part_.split(':')[1]
             description = desc.split(':')[1]
             result = '. '.join([part, result])
     return result
@@ -173,7 +173,54 @@ def detect_articulated_parts(video_path):
 
 if __name__ == '__main__':
     # video_path = "/home/link/DreMa/third_party/articulate-anything/datasets/in-the-wild-dataset/videos/drawer_RL_Bench.mp4"
-    video_path = "/home/link/DreMa/third_party/articulate-anything/datasets/in-the-wild-dataset/videos/microwave_RL_Bench.mp4"
+    video_path = "/home/link/DreMa/third_party/articulate-anything/datasets/in-the-wild-dataset/videos/cabinet_RLBench.mp4"
 
     response = detect_articulated_parts(video_path)
     print(response)
+
+
+    ### grill
+    """
+    (1) part_name: main chamber; description: the large cylindrical body that serves as the primary cooking chamber
+    (2) part_name: lid; description: the top cover of the main chamber that opens and closes to access the cooking area
+    (3) part_name: chimney; description: the vertical pipe on top that allows smoke to escape
+    (4) part_name: firebox; description: the smaller chamber attached to the side where fuel is burned
+    (5) part_name: grate; description: horizontal rack inside the main chamber where food is placed
+    (6) part_name: wheels; description: circular components at the bottom that allow the smoker to be moved
+    main chamber. lid. chimney. firebox. grate. wheels.
+    """
+
+    ### microwave + box + laptop
+    """
+    (1) part_name: base
+    (2) part_name: lid
+    base. lid.
+    """
+
+    ### jar
+    """
+    (1) part_name: red cylinder; 
+    (2) part_name: lid;
+    red cylinder. lid.
+    """
+
+    ### toilet
+    """
+    (1) part_name: toilet bowl; description: the main basin part of the toilet that remains fixed to the ground
+    (2) part_name: toilet lid; description: the top cover that can rotate up and down around a hinge at the back of the toilet
+    (3) part_name: toilet seat; description: the ring-shaped seat that sits between the bowl and lid, also rotates up and down on the same hinge mechanism
+    toilet bowl. toilet lid. toilet seat.
+    """
+
+    ### washing machine
+    """
+    (1) part_name: handle; description: the main gripping component that rotates downward to open the door, appears to be metallic and cylindrical in shape
+    (2) part_name: mounting plate; description: the triangular or L-shaped base plate that attaches to the door surface and houses the handle mechanism
+    (3) part_name: hinge joint; description: the connection point where the handle rotates relative to the mounting plate, allowing for downward pivoting motion
+    hinge joint.  mounting plate.  handle. 
+    """
+
+    ### cabinet
+    """
+    cabinet. sliding door.
+    """
