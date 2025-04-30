@@ -34,23 +34,41 @@ Compare these videos and provide feedback on the prediction. Use this format:
 "failure_reason": {one of these "success", "joint_type", "joint_axis", "joint_origin", "joint_limit"},
 "improvement_suggestion": {suggestion to improve the prediction},
 "realism_rating": {0-10},
+"error_history": {list previous errors and the current error if any}
 }
 ```
+
+IMPORTANT: Your primary task is to evaluate what you SEE in the videos. The candidate function is secondary information to help confirm your visual analysis, NOT the primary source of evaluation.
 
 Be concise and specific. When writing the description, compare the predicted video to the ground truth and analyze the `candidate_function` to identify issues.
 
 Important points:
 
 - Evaluate only the joint prediction, not link placement.
+- ALWAYS prioritize what you observe in the videos over what the code suggests. If the code looks correct but the video shows clear issues, trust your visual observation.
+- CAREFULLY CHECK THE AXIS OF ROTATION OR TRANSLATION in both videos. Joint axis errors are common and must be detected.
 - Compare videos first, then examine the candidate function.
 - Rate highly if the prediction closely matches the ground truth.
 - Identify problems using this checklist, focusing on the most significant error:
   1. Incorrect joint type (e.g., revolute instead of prismatic): Rate 0
   2. Wrong joint axis (e.g., x-axis instead of y-axis): Rate 1
+    - Carefully compare the axis of rotation/translation between ground truth and prediction
+    - If a door opens sideways in the prediction but opens upward in ground truth, this is a joint axis error
+    - If rotation occurs around a different axis (e.g., z-axis vs x-axis), this is a joint axis error
+    - NEVER give a rating above 1 if the joint axis is incorrect
   3. Incorrect joint origin (for **revolute joints** only): Rate 2
-  4. Incorrect joint limit (for **revolute joints** only; e.g, the door is opening inward instead of outward): Rate 3
+    - Look for unnatural separation/gap between parts that should remain connected
+    - Check if the rotation point is in the wrong location
+    - NEVER give a rating above 2 if the joint origin in incorrect
+  4. Incorrect joint limit (for **revolute joints** only): Rate 3
+    - This includes cases where the part rotates in the wrong direction (e.g., a door opening outward when it should open inward)
+    - This includes cases where the part opens too far or not far enough
+    - Pay special attention to the direction of movement and compare it precisely to the ground truth
+    - NEVER give a rating above 3 if the rotation direction is wrong
   5. No errors: Rate above 5, mark as "success"
 - Your `realism_rating` must match the `failure_reason` according to the ratings specified above.
+- NEVER give a rating of 10 unless the prediction matches the ground truth perfectly in all aspects, including direction of movement.
+- Before finalizing your rating, double-check that it aligns with the failure_reason you identified.
 - Joint axis order is [x, y, z]: 
     - x : forward -- positive x, backward -- negative x
     - y: right -- positive y, left -- negative y
@@ -59,6 +77,7 @@ Important points:
 - Analyze the videos frame-by-frame if needed. Describe the motion clearly, using terms like "rotates", "slides", or "pivots" to convey the joint behavior.
 - **Important**: the groundtruth video might not have the same texture as the prediction video e.g., the gt might be in-the-wild video captured by a phone while prediction is 3D model rendered in a 
 physics simulator. Thus, you must correctly describe the motion of the object in the video and compare it with the prediction.
+- In the "error_history" field, include the current error (if any) and list all previous errors that have been identified. This helps track the improvement process.
 - We will use `json.loads()` to parse your response. Make sure that your response is exactly ```json {your response}```, nothing more, nothing less.
 """
 
@@ -159,26 +178,23 @@ class JointCritic(Agent):
         return system_instruction
 
     def _make_prompt_parts(
-        self,
-        candidate_function_path: os.PathLike,
-        gt_video_path: os.PathLike,
-        pred_video_path: os.PathLike,
-        num_frames=5,
-        video_encoding_strategy="individual",
-    ):
+    self,
+    candidate_function_path: os.PathLike,
+    gt_video_path: os.PathLike,
+    pred_video_path: os.PathLike,
+    num_frames=5,
+    video_encoding_strategy="individual",
+    error_history=None  # Make this optional
+):
         gt_video = get_frames_from_video(
             gt_video_path,
             num_frames=num_frames,
             video_encoding_strategy=video_encoding_strategy,
-            # width=self.cfg.simulator.camera_params.width,
-            # height=self.cfg.simulator.camera_params.height,
         )
         pred_video = get_frames_from_video(
             pred_video_path,
             num_frames=num_frames,
             video_encoding_strategy=video_encoding_strategy,
-            # width=self.cfg.simulator.camera_params.width,
-            # height=self.cfg.simulator.camera_params.height,
         )
         candidate_function = file_to_string(candidate_function_path)
         candidate_function_text = (
@@ -190,16 +206,37 @@ class JointCritic(Agent):
         prompt_parts = ["The groundtruth video is:\n"] + gt_video
         prompt_parts += ["The prediction video is:\n"] + pred_video
         prompt_parts += [candidate_function_text]
+        
+        # Only add error history if it exists and has content
+        if error_history and len(error_history) > 0:
+            error_history_text = "\n## Previous Errors\n\nThe following errors have been identified in previous iterations:\n\n"
+            for i, error in enumerate(error_history):
+                error_history_text += f"{i+1}. Iteration {error.get('iteration', '?')}, Type: {error.get('error_type', 'unknown')}\n"
+                error_history_text += f"   Description: {error.get('description', 'No description')}\n\n"
+            
+            prompt_parts += [error_history_text]
+            prompt_parts += ["\nTake these previous errors into account when evaluating. Make sure your 'error_history' field includes these previous errors along with any new error you identify."]
+        
         return prompt_parts
 
-    def parse_response(self, response, realign_score=True, **kwargs):
+    def parse_response(self, response, realign_score=True, iteration=None, seed=None, error_history=None, **kwargs):
         # Extract the JSON string from the response text
         json_str = response.text.strip().strip("```json").strip()
 
         print(f"API RESPONSE: {response}")
 
         # Parse the JSON string into a dictionary
-        parsed_response = json.loads(json_str, strict=False)
+        try:
+            parsed_response = json.loads(json_str, strict=False)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse critic response: {e}")
+            logging.error(f"Response: {json_str}")
+            # Return a default response in case of parsing error
+            parsed_response = {
+                "failure_reason": "parse_error",
+                "realism_rating": 0,
+                "improvement_suggestion": "Error parsing critic response"
+            }
 
         if realign_score:
             scores = {
@@ -209,17 +246,75 @@ class JointCritic(Agent):
                 "joint_origin": 2,
                 "joint_limit": 3,
             }
-            parsed_response["realism_rating"] = scores[
-                parsed_response["failure_reason"]
-            ]
+            parsed_response["realism_rating"] = scores.get(
+                parsed_response["failure_reason"], 0
+            )
             if int(parsed_response["realism_rating"]) > 5:
                 parsed_response["failure_reason"] = "success"
 
+        # Initialize error_history in parsed_response if needed
+        if "error_history" not in parsed_response:
+            parsed_response["error_history"] = []
+        
+        # If the response contains error_history as a simple list of strings, convert it to proper format
+        if parsed_response["error_history"] and isinstance(parsed_response["error_history"][0], str):
+            string_errors = parsed_response["error_history"]
+            parsed_response["error_history"] = []
+            for error_type in string_errors:
+                parsed_response["error_history"].append({
+                    "iteration": iteration or 0,
+                    "seed": seed or 0,
+                    "error_type": error_type,
+                    "description": parsed_response.get("improvement_suggestion", "No description")
+                })
+        
+        # If there is an error and it's not a success, add it to error history with complete information
+        if parsed_response["failure_reason"] != "success" and iteration is not None:
+            new_error = {
+                "iteration": iteration,
+                "seed": seed or 0,
+                "error_type": parsed_response["failure_reason"],
+                "description": parsed_response.get("improvement_suggestion", "No description")
+            }
+            
+            # Add the new error if it's not already in the history
+            error_found = False
+            for err in parsed_response["error_history"]:
+                if (err.get("iteration") == iteration and 
+                    err.get("seed") == seed and 
+                    err.get("error_type") == new_error["error_type"]):
+                    error_found = True
+                    # Update the description if it exists in the current response
+                    if "improvement_suggestion" in parsed_response:
+                        err["description"] = parsed_response["improvement_suggestion"]
+                    break
+                    
+            if not error_found:
+                parsed_response["error_history"].append(new_error)
+        
+        # If we have previous error history from kwargs, incorporate it into response
+        if error_history:
+            # Add any previous errors not already in the list
+            for prev_error in error_history:
+                error_found = False
+                for err in parsed_response["error_history"]:
+                    if (err.get("iteration") == prev_error.get("iteration") and 
+                        err.get("seed") == prev_error.get("seed") and 
+                        err.get("error_type") == prev_error.get("error_type")):
+                        error_found = True
+                        break
+                        
+                if not error_found:
+                    parsed_response["error_history"].append(prev_error)
+
         logging.info(f"Joint critic response: {parsed_response}")
+        logging.info(f"Updated error history: {parsed_response['error_history']}")
 
         # Save the parsed response to a JSON file
         save_json(parsed_response, join_path(
             self.cfg.out_dir, self.OUT_RESULT_PATH))
+            
+        return parsed_response
 
 
 class JointCriticMultiModalExamples(InContextExampleModel, JointCritic):
@@ -256,10 +351,22 @@ class JointCriticMultiModalExamples(InContextExampleModel, JointCritic):
             # input_dir=os.path.dirname(self.cfg.dataset_dir),
         )
 
+        # TODO: actually deal with None values for semantic_join_id. For example, still get closest looking object from partnet
+        # Fallback to joint_id if semantic_joint_id is None
+
+        # logging.info(f"joint id: {joint_id}")
+        # logging.info(f"semantics joint id: {semantic_joint_id}")
+        if not semantic_joint_id:
+            semantic_joint_id = joint_id
+
+
         gt_video_name = (
             f"{'aug_' if self.cfg.joint_critic.use_cotracker else ''}video_{joint_id}_{self.cfg.cam_view}.mp4"
         )
         pred_video_name = f"{'aug_' if self.cfg.joint_critic.use_cotracker else ''}video_{semantic_joint_id}_{self.cfg.cam_view}.mp4"
+
+        # logging.info(f"gt video name: {gt_video_name}")
+        # logging.info(f"pred video name: {pred_video_name}")
 
         candidate_function_path = join_path(example_path, "joint_pred.py")
         expected_joint_critic_path = join_path(
@@ -267,6 +374,9 @@ class JointCriticMultiModalExamples(InContextExampleModel, JointCritic):
 
         gt_video_path = join_path(example_path, gt_video_name)
         pred_video_path = join_path(example_path, pred_video_name)
+
+        # logging.info(f"gt video path: {gt_video_path}")
+        # logging.info(f"pred video path: {pred_video_path}")
 
         return {
             "candidate_function_path": candidate_function_path,

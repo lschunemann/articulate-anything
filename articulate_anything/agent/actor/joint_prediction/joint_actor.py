@@ -33,6 +33,9 @@ from articulate_anything.utils.metric import compute_joint_diff
 from articulate_anything.utils.partnet_utils import get_joint_semantic
 from omegaconf import DictConfig, OmegaConf
 
+from typing import List, Dict, Any, Optional
+import logging
+
 JOINT_PREDICTION_GENERAL_SYSTEM_INSTRUCTION = """
 ## General Instructions
 
@@ -178,6 +181,30 @@ JOINT_PREDICTION_ALL_JOINTS_INSTRUCTION = """
 - You must make **all** possible kinematic joints for the object. For example, if the object contains a lid and a bunch of buttons, you must create joints for both the lid and the buttons.
 """
 
+# def fix_generated_joint_code(file_path):
+#     """Apply proper 90-degree rotation to joint axes and coordinates"""
+#     with open(file_path, 'r') as f:
+#         content = f.read()
+    
+#     # Parse the code in a more structured way (consider using AST)
+#     # For a 90-degree rotation around Z axis:
+#     # [x, y, z] -> [-y, x, z]
+    
+#     def rotate_coordinates(match):
+#         coords_str = match.group(1)
+#         coords = eval(coords_str)  # Be cautious with eval
+#         rotated = [-coords[1], coords[0], coords[2]]
+#         return f"[{rotated[0]}, {rotated[1]}, {rotated[2]}]"
+    
+#     # Apply transformation to all coordinate arrays
+#     import re
+#     # Match coordinate arrays like [x, y, z]
+#     content = re.sub(r'\[(\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*)\]', 
+#                     rotate_coordinates, content)
+    
+#     with open(file_path, 'w') as f:
+#         f.write(content)
+
 
 class JointPredictionActor(Agent):
     OUT_RESULT_PATH = "joint_pred.py"
@@ -290,6 +317,9 @@ class JointPredictionActor(Agent):
         if self.cfg.joint_actor.mode == "image":
             assert gt_input is not None, "GT input is required for image modality"
             prompt_parts.extend(self._make_image_prompt_parts(gt_input))
+        elif self.cfg.joint_actor.mode == "video" and self.cfg.modality == 'generated':
+            gt_input = self.cfg.video_path
+            prompt_parts.extend(self._make_video_prompt_parts(gt_input))
         elif self.cfg.joint_actor.mode == "video":
             assert gt_input is not None, "GT input is required for video modality"
             prompt_parts.extend(self._make_video_prompt_parts(gt_input))
@@ -304,11 +334,17 @@ class JointPredictionActor(Agent):
         return prompt_parts
 
     def _make_video_prompt_parts_retry(self, gt_video: os.PathLike,
-                                       candidate_function_path: os.PathLike,
-                                       feedback: str,
-                                       **kwargs):
+                               candidate_function_path: os.PathLike,
+                               feedback: str,
+                               error_history=None,  # Make this optional
+                               **kwargs):
         # only for video modality
         assert self.cfg.joint_actor.mode == "video", "Joint pred retry only for video modality"
+
+        # Check if gt_video is None or doesn't exist, use video_path from config if available
+        if gt_video is None or not os.path.exists(gt_video):
+            if hasattr(self.cfg, 'video_path') and self.cfg.video_path:
+                gt_video = self.cfg.video_path
 
         prompt_parts = self._make_video_prompt_parts(gt_video)
         prompt_parts += [
@@ -318,8 +354,17 @@ class JointPredictionActor(Agent):
             + "\n```"
         ]
         prompt_parts += ["\nHere's the feedback\n" + feedback]
+        
+        # Only add error history if it exists and has content
+        if error_history and len(error_history) > 0:
+            error_history_msg = "\n## Previous Errors To Avoid\n\n"
+            for i, error in enumerate(error_history):
+                error_history_msg += f"{i+1}. Iteration {error.get('iteration', '?')}, Type: {error.get('error_type', 'unknown')}\n"
+                error_history_msg += f"   Description: {error.get('description', 'No description')}\n\n"
+            prompt_parts += [error_history_msg]
+        
         prompt_parts += [
-            "\nPlease examine the original function provided and the feedback carefully. Then, modify that function to address the feedback."
+            "\nPlease examine the original function provided and the feedback carefully. Then, modify that function to address the feedback AND avoid repeating any previous errors listed above."
         ]
         return prompt_parts
 
@@ -335,13 +380,16 @@ class JointPredictionActor(Agent):
             links = make_links_from_json(self.cfg.link_actor.new_box_layout)
         else:
             # masked gt robot urdf then reconstruct with our VLM
-            robot = mask_urdf(get_urdf_file(self.cfg.dataset_dir))
+            urdf_dir = self.cfg.dataset_dir
+            robot = mask_urdf(get_urdf_file(urdf_dir))
             links = robot.get_links()
         return links
 
     def render_prediction(self, gpu_id: str):
         pred_python_file = join_path(
             self.cfg.out_dir, self.OUT_RESULT_PATH)
+        # # Fix the generated code to swap X and Y axes
+        # fix_generated_joint_code(pred_python_file) # TODO: fix rotation in segmentation instead
         links = self.get_links()
         if self.cfg.modality == "text":
             input_dir = self.cfg.out_dir
