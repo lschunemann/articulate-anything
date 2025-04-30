@@ -246,6 +246,25 @@ def line_point_distance(p, points):
     cross_product = np.linalg.norm(np.cross(points_to_origin, p), axis=1)
     return cross_product / np.linalg.norm(p)
 
+# Create point clouds by sampling from the mesh surface
+def sample_points_from_mesh(mesh, n_points=10000):
+    """Sample points uniformly from the mesh surface"""
+    points, face_indices = trimesh.sample.sample_surface(mesh, n_points)
+    
+    # Calculate face normals to get colors (optional)
+    face_normals = mesh.face_normals[face_indices]
+    
+    # If the mesh has vertex colors or a texture, you can sample colors too
+    if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'vertex_colors'):
+        # Sample colors from the mesh if they exist
+        vertex_indices = mesh.faces[face_indices]
+        colors = mesh.visual.vertex_colors[vertex_indices].mean(axis=1)[:, :3] / 255.0
+    else:
+        # Otherwise use face normals converted to colors (normalized from -1,1 to 0,1)
+        colors = (face_normals + 1) / 2
+
+    return points, colors
+
 def read_masks(object_masks_path, new_shape):
     masks = []
 
@@ -267,17 +286,18 @@ if __name__ == "__main__":
 
     parser = ArgumentParser()
     # required
-    parser.add_argument("--base_path", type=str, default="/home/leonardophd/workspace/data/HOI4D")
-    parser.add_argument("--case_name", type=str, default="Video1")
+    parser.add_argument("--base_path", type=str, default="/home/link/DreMa/third_party/articulate-anything/datasets/output_views")
+    parser.add_argument("--case_name", type=str, default="microwave_multi-view")
 
     # optional
-    parser.add_argument("--mesh_name", type=str, default="mesh.glb")
-    parser.add_argument("--image_name", type=str, default="0")
+    parser.add_argument("--mesh_name", type=str, default="microwave_multi-view.glb")
+    parser.add_argument("--image_name", type=str, default="render_microwave_multi-view_2_0031")
     parser.add_argument("--output_dir", type=str, default="../temp/Video1/matching_temp")
-    parser.add_argument("--mask_directory", type=str, default="obj_masks")
-    parser.add_argument("--image_directory", type=str, default="color")
+    parser.add_argument("--mask_directory", type=str, default="../../segmentation_masks/microwave_multi-view")
+    parser.add_argument("--image_directory", type=str, default="")
+    parser.add_argument("--depth_path", type=str, default="")
     parser.add_argument("--pcd_directory", type=str, default="pcd")
-    parser.add_argument("--intrinsic_file", type=str, default="intrinsics.npz")
+    parser.add_argument("--intrinsic_file", type=str, default="camera_params_microwave_multi-view_2.npz")
     parser.add_argument("--extrinsic_file", type=str, default="extrinsics.npz")
     parser.add_argument("--convert_extrinsic", type=bool, default=True)
     parser.add_argument("--vis", type=bool, default=True)
@@ -301,11 +321,11 @@ if __name__ == "__main__":
     mask_path = os.path.join(base_path, case_name, args.mask_directory, f"{args.image_name}.png")
     print("Mask path", mask_path)
 
-    # set point cloud path using os
-    pcd_path = os.path.join(base_path, case_name, args.pcd_directory, "full_object_points.pkl")
-    pcd_image_path = os.path.join(base_path, case_name, args.pcd_directory, f"{args.image_name}.pkl")
-    print("PCD path", pcd_path)
-    print("RGB PCD path", pcd_image_path)
+    # # set point cloud path using os
+    # pcd_path = os.path.join(base_path, case_name, args.pcd_directory, "full_object_points.pkl")
+    # pcd_image_path = os.path.join(base_path, case_name, args.pcd_directory, f"{args.image_name}.pkl")
+    # print("PCD path", pcd_path)
+    # print("RGB PCD path", pcd_image_path)
 
     # read the depth image
     depth_path = os.path.join(base_path, case_name, args.depth_path, f"{args.image_name}.png")
@@ -333,42 +353,65 @@ if __name__ == "__main__":
     raw_img = cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB)
     mask_img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
 
-    # Load the pcd in world coordinate of the object
-    with open(pcd_path, "rb") as f:
-        data = pickle.load(f)
-        obs_points = data["points"]
-        obs_colors = data["colors"]
+    # # Load the pcd in world coordinate of the object
+    # with open(pcd_path, "rb") as f:
+    #     data = pickle.load(f)
+    #     obs_points = data["points"]
+    #     obs_colors = data["colors"]
 
     # Load the pcd in world coordinate of the object
-    with open(pcd_image_path, "rb") as f:
-        data = pickle.load(f)
-        first_points = data["points"]
-        first_colors = data["colors"]
-        first_mask = np.ones(len(first_points), dtype=bool)
+    # with open(pcd_image_path, "rb") as f:
+    #     data = pickle.load(f)
+    #     first_points = data["points"]
+    #     first_colors = data["colors"]
+    #     first_mask = np.ones(len(first_points), dtype=bool)
 
     # if the mask is between 0 and 1, convert to 0 and 255
     if np.max(mask_img) <= 1:
         mask_img = mask_img * 255
 
     # Load the intrinsic and extrinsic parameters
-    with open(extrinsic_path, "rb") as f:
-        extrinsics = pickle.load(f)
-        c2ws = extrinsics["cam_c2w"]
-        if args.cover_extrinsic:
-            w2cs = np.array([np.linalg.inv(c2w) for c2w in c2ws])
+    # with open(extrinsic_path, "rb") as f:
+    #     extrinsics = pickle.load(f)
+    #     c2ws = extrinsics["cam_c2w"]
+    #     if args.cover_extrinsic:
+    #         w2cs = np.array([np.linalg.inv(c2w) for c2w in c2ws])
 
-    with open(intrinsic_path, "rb") as f:
-        intrinsic = pickle.load(f)
-        intrinsic = intrinsic["intrinsic"]
+    camera_data = np.load(intrinsic_path)
+    intrinsic = camera_data['K']
+    R = camera_data['R']
+    t = camera_data['t']
 
+    # Create the camera-to-world matrix (c2w)
+    c2w = np.eye(4)  # Create a 4x4 identity matrix
+    c2w[:3, :3] = R  # Add rotation component
+    c2w[:3, 3] = t.flatten()  # Add translation component
 
-    c2w = c2ws[0]
+    # Create the world-to-camera matrix (w2c)
     w2c = np.linalg.inv(c2w)
-    w2cs = [np.linalg.inv(c2w) for c2w in c2ws]
+
+    # If you have multiple camera views, you need to create c2ws and w2cs arrays
+    c2ws = [c2w]  # If you have just one view
+    w2cs = [w2c]  # If you have just one view
 
     # Load the shape prior
     mesh = trimesh.load_mesh(mesh_path, force="mesh")
     mesh = as_mesh(mesh)
+
+    # Sample points from the mesh surface
+    n_sample_points = 10000  # Adjust as needed
+    obs_points, obs_colors = sample_points_from_mesh(mesh, n_sample_points)
+
+    # Create a first view point cloud (similar to the original first_points)
+    # This can be a subset or a transformed version of the original points
+    first_points = obs_points.copy()
+    first_colors = obs_colors.copy()
+
+    # If you need to transform the points to match your camera view:
+    # first_points = np.dot(mesh2world[:3, :3], obs_points.T).T + mesh2world[:3, 3]
+
+    # Create a mask for the first points (all valid in this case)
+    first_mask = np.ones(len(first_points), dtype=bool)
 
     # Calculate camera parameters
     fov = 2 * np.arctan(raw_img.shape[1] / (2 * intrinsic[0, 0]))
