@@ -33,9 +33,6 @@ from articulate_anything.utils.metric import compute_joint_diff
 from articulate_anything.utils.partnet_utils import get_joint_semantic
 from omegaconf import DictConfig, OmegaConf
 
-from typing import List, Dict, Any, Optional
-import logging
-
 JOINT_PREDICTION_GENERAL_SYSTEM_INSTRUCTION = """
 ## General Instructions
 
@@ -140,7 +137,10 @@ Important points:
 ```
 
 """
-
+#     - x : right -- positive x, left -- negative x
+#     - y: forward -- positive y, backward -- negative y
+#     - z: up -- positive z, down -- negative z
+# - Make sure you follow this axis notation.
 JOINT_PREDICTION_VISUAL_INPUT_INSTRUCTION = """
 ## {visual_input} Input 
 
@@ -181,29 +181,29 @@ JOINT_PREDICTION_ALL_JOINTS_INSTRUCTION = """
 - You must make **all** possible kinematic joints for the object. For example, if the object contains a lid and a bunch of buttons, you must create joints for both the lid and the buttons.
 """
 
-# def fix_generated_joint_code(file_path):
-#     """Apply proper 90-degree rotation to joint axes and coordinates"""
-#     with open(file_path, 'r') as f:
-#         content = f.read()
+def fix_generated_joint_code(file_path):
+    """Apply proper 90-degree rotation to joint axes and coordinates"""
+    with open(file_path, 'r') as f:
+        content = f.read()
     
-#     # Parse the code in a more structured way (consider using AST)
-#     # For a 90-degree rotation around Z axis:
-#     # [x, y, z] -> [-y, x, z]
+    # Parse the code in a more structured way (consider using AST)
+    # For a 90-degree rotation around Z axis:
+    # [x, y, z] -> [-y, x, z]
     
-#     def rotate_coordinates(match):
-#         coords_str = match.group(1)
-#         coords = eval(coords_str)  # Be cautious with eval
-#         rotated = [-coords[1], coords[0], coords[2]]
-#         return f"[{rotated[0]}, {rotated[1]}, {rotated[2]}]"
+    def rotate_coordinates(match):
+        coords_str = match.group(1)
+        coords = eval(coords_str)  # Be cautious with eval
+        rotated = [-coords[1], coords[0], coords[2]]
+        return f"[{rotated[0]}, {rotated[1]}, {rotated[2]}]"
     
-#     # Apply transformation to all coordinate arrays
-#     import re
-#     # Match coordinate arrays like [x, y, z]
-#     content = re.sub(r'\[(\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*)\]', 
-#                     rotate_coordinates, content)
+    # Apply transformation to all coordinate arrays
+    import re
+    # Match coordinate arrays like [x, y, z]
+    content = re.sub(r'\[(\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*,\s*-?\d+\.?\d*\s*)\]', 
+                    rotate_coordinates, content)
     
-#     with open(file_path, 'w') as f:
-#         f.write(content)
+    with open(file_path, 'w') as f:
+        f.write(content)
 
 
 class JointPredictionActor(Agent):
@@ -334,10 +334,9 @@ class JointPredictionActor(Agent):
         return prompt_parts
 
     def _make_video_prompt_parts_retry(self, gt_video: os.PathLike,
-                               candidate_function_path: os.PathLike,
-                               feedback: str,
-                               error_history=None,  # Make this optional
-                               **kwargs):
+                                       candidate_function_path: os.PathLike,
+                                       feedback: str,
+                                       **kwargs):
         # only for video modality
         assert self.cfg.joint_actor.mode == "video", "Joint pred retry only for video modality"
 
@@ -345,6 +344,7 @@ class JointPredictionActor(Agent):
         if gt_video is None or not os.path.exists(gt_video):
             if hasattr(self.cfg, 'video_path') and self.cfg.video_path:
                 gt_video = self.cfg.video_path
+                # logging.info(f"Using cfg.video_path: {gt_video} for retry")
 
         prompt_parts = self._make_video_prompt_parts(gt_video)
         prompt_parts += [
@@ -354,17 +354,8 @@ class JointPredictionActor(Agent):
             + "\n```"
         ]
         prompt_parts += ["\nHere's the feedback\n" + feedback]
-        
-        # Only add error history if it exists and has content
-        if error_history and len(error_history) > 0:
-            error_history_msg = "\n## Previous Errors To Avoid\n\n"
-            for i, error in enumerate(error_history):
-                error_history_msg += f"{i+1}. Iteration {error.get('iteration', '?')}, Type: {error.get('error_type', 'unknown')}\n"
-                error_history_msg += f"   Description: {error.get('description', 'No description')}\n\n"
-            prompt_parts += [error_history_msg]
-        
         prompt_parts += [
-            "\nPlease examine the original function provided and the feedback carefully. Then, modify that function to address the feedback AND avoid repeating any previous errors listed above."
+            "\nPlease examine the original function provided and the feedback carefully. Then, modify that function to address the feedback."
         ]
         return prompt_parts
 
