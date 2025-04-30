@@ -6,6 +6,7 @@ from articulate_anything.agent.actor.mesh_retrieval.text_layout_planner import T
 from articulate_anything.agent.actor.mesh_retrieval.partnet_mesh_retrieval import PartnetMeshRetrieval
 from articulate_anything.agent.actor.mesh_retrieval.category_selector import (
     CategorySelector,
+    DummyCategorySelector
 )
 from articulate_anything.agent.actor.mesh_retrieval.obj_selector import (
     make_obj_selector,
@@ -45,7 +46,7 @@ def mesh_retrieval_generated(cfg: DictConfig) -> Steps:
     
     # 1. Similar to visual mesh retrieval, we'll use a category selector
     # This step can be simplified since we already know what object we're working with
-    category_selector = CategorySelector(create_task_config(cfg, "category_selector"))
+    category_selector = DummyCategorySelector(create_task_config(cfg, "category_selector"))
     category_selector.generate_prediction(cfg.prompt,
                                          additional_prompt=cfg.additional_prompt,
                                          **cfg.gen_config,

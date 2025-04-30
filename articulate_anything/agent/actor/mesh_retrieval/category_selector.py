@@ -77,7 +77,7 @@ class CategorySelector(Agent):
     def _make_system_instruction(self):
         return "COMPOSITE SYSTEM."
 
-    def generate_prediction(self, prompt, additional_prompt=None, gen_config=None,  #TODO try: additional_prompt='drawer' or passing to func
+    def generate_prediction(self, prompt, additional_prompt=None, gen_config=None,  
                             clip_config={},
                             overwrite=False, **kwargs):
         if (
@@ -135,3 +135,60 @@ class CategorySelector(Agent):
         save_json(result, join_path(self.cfg.out_dir, self.OUT_RESULT_PATH))
 
         return result
+    
+
+class DummyCategorySelector(Agent):
+    OUT_RESULT_PATH = "category_selector.json"
+
+    def __init__(self, cfg: AgentConfig):
+        self.object_detector = ObjectDetector(
+            create_task_config(cfg, "object_detector"))
+        super().__init__(cfg)
+
+    def _make_system_instruction(self):
+        """Return a simple system instruction without requiring a response from the assistant."""
+        return """
+        This is a dummy category selector used to populate results directly 
+        without performing detailed computations.
+        """
+
+    def generate_prediction(self, prompt, additional_prompt=None, gen_config=None,  
+                            clip_config={},
+                            overwrite=False, **kwargs):
+        """Directly generate the prediction result without complex categorization logic."""
+        if (
+            (os.path.exists(join_path(self.cfg.out_dir, self.OUT_RESULT_PATH))
+            and not overwrite) or self.cfg.modality == 'generated'
+        ):
+            logging.info(
+                f"{self.__class__.__name__}: Prediction already exists. Skipping generation."
+            )
+            return
+
+        # Use dummy logic to populate results if additional_prompt is provided
+        if additional_prompt is not None:
+            target_object = additional_prompt
+            logging.info(f"Using additional prompt. Target object: {target_object}")
+        else:
+            # Fallback to dummy object detector
+            self.object_detector.generate_prediction(
+                video=prompt, gen_config=gen_config, overwrite=overwrite, **kwargs
+            )
+            affordance = self.object_detector.load_prediction()
+            target_object = affordance.get('object', "dummy_object")  # Default fallback
+
+        # Populate dummy results
+        result = {
+            "target_object": target_object,
+            "most_similar_objects": "dummy_object_A",
+            "similarity_scores": 1.0,
+        }
+
+        # Save the result
+        save_json(result, join_path(self.cfg.out_dir, self.OUT_RESULT_PATH))
+        return result
+
+    def load_prediction(self):
+        """Load the saved prediction from the JSON file."""
+        return load_json(join_path(self.cfg.out_dir, self.OUT_RESULT_PATH))
+    

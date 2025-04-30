@@ -61,7 +61,19 @@ class Agent:
         return display(HTML(join_path(self.cfg.out_dir, "prompt.html")))
 
     def make_prompt_parts(self, *args, **kwargs):
-        prompt_parts = self._make_prompt_parts(*args, **kwargs)
+        # Move positional arguments into kwargs for clarity
+        if len(args) > 0:
+            logging.warning("Positional arguments detected in make_prompt_parts. Passing them as kwargs.")
+
+            # Explicitly map positional arguments into keyword arguments based on their expected order
+            # Assuming the first positional argument corresponds to `link_placement_path`
+            if "link_placement_path" not in kwargs and len(args) > 0:
+                kwargs["link_placement_path"] = self.cfg.joint_actor.link_placement_path #args[0]
+
+            # You can repeat this logic for other expected arguments if necessary
+
+        # Call the subclass-specific _make_prompt_parts
+        prompt_parts = self._make_prompt_parts(**kwargs)
         save_prompt_parts_as_html(
             prompt_parts, join_path(self.cfg.out_dir, "prompt.html")
         )
@@ -78,10 +90,7 @@ class Agent:
 
     def generate_prediction(self, *args, gen_config=None, overwrite=False, **kwargs):
         out_path = join_path(self.cfg.out_dir, self.OUT_RESULT_PATH)
-        if (
-            os.path.exists(out_path)
-            and not overwrite
-        ):
+        if os.path.exists(out_path) and not overwrite:
             logging.info(
                 f"{self.__class__.__name__}: Prediction already exists at {out_path}. Skipping generation."
             )
@@ -92,13 +101,14 @@ class Agent:
 
         logging.info(f"{self.__class__.__name__}: Generating content.")
         prompt_parts = self.make_prompt_parts(*args, **kwargs)
-        logging.info(f"Prompt: {prompt_parts}")
+        # logging.info(f"Prompt: {prompt_parts}")
 
         response = self.model.generate_content(
             prompt_parts,
             generation_config=gen_config,
         )
-        # logging.info(f"Usage: {response.usage_metadata}")
+        logging.info(f"VLM prediction call successfull")
+        # logging.info(f"VLM response: {response.text}")
 
         self.parse_response(response, **kwargs)
         return response
