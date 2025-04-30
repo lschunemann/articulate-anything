@@ -158,7 +158,11 @@ def process_visual(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> D
 def process_generated(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> DictConfig:
     """
     """
-
+    if not hasattr(cfg, 'video_path'):
+        cfg.video_path = prompt 
+    cfg.prompt = join_path(
+        os.path.dirname(cfg.prompt), f"{os.path.basename(cfg.prompt)}")
+    logging.info(f"cfg.prompt: {cfg.prompt}")
     return cfg
 
 
@@ -180,22 +184,41 @@ def process_text(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) -> Dic
 
 def actor_function(iteration: int, seed: int, cfg: DictConfig,
                    prompt: str, gpu_id: str, retry_kwargs: dict) -> Dict[str, Any]:
+    # Create joint actor with appropriate config
     joint_actor = make_joint_actor(cfg)(create_task_config(cfg, join_path(
         "joint_actor", f"iter_{iteration}", f"seed_{seed}"))
     )
-    joint_actor.generate_prediction(gt_input=cfg.video_path, #cfg.prompt
-                                    **retry_kwargs, **cfg.gen_config)
+    
+    # Use cfg.video_path directly for consistency
+    video_path = cfg.video_path if hasattr(cfg, 'video_path') else prompt
+    
+    # Pass retry_kwargs to generate_prediction
+    joint_actor.generate_prediction(
+        video_path,
+        **retry_kwargs,
+        **cfg.gen_config
+    )
+    
+    logging.info("Start rendering prediction")
     joint_actor.render_prediction(gpu_id)
+    logging.info("Successfully rendered prediction")
     video = joint_actor.load_predicted_rendering()
+    logging.info("Successfully loaded joint prediction")
 
     if cfg.modality != "text" and cfg.joint_actor.targetted_affordance:
         gt_joint_diff = joint_actor.compute_gt_diff()
         logging.info(f"GT joint diff is {gt_joint_diff}")
 
+    # Return result with error_history carried over from retry_kwargs if it exists
     result = {
         "candidate_function_path": join_path(joint_actor.cfg.out_dir, joint_actor.OUT_RESULT_PATH),
         "pred_video_path": video,
     }
+    
+    # Only include error_history if it exists in retry_kwargs
+    if "error_history" in retry_kwargs:
+        result["error_history"] = retry_kwargs["error_history"]
+        
     return result
 
 
@@ -205,25 +228,79 @@ def is_actor_only(cfg):
     return cfg.actor_critic.actor_only if isinstance(cfg.actor_critic.actor_only, bool) else cfg.modality != "video"
 
 def critic_function(iteration: int, seed: int, cfg: DictConfig, prompt: str, actor_result: Dict[str, Any]) -> Dict[str, Any]:
+    cfg.prompt = cfg.video_path
     if is_actor_only(cfg):
         return {
             "feedback_score": 10
         }
+    
+    # Create joint critic with appropriate config
     joint_critic = make_joint_critic(cfg)(create_task_config(cfg, join_path(
         "joint_critic", f"iter_{iteration}", f"seed_{seed}"))
     )
-    joint_critic.generate_prediction(gt_video_path=cfg.prompt,
-                                     **actor_result, **cfg.gen_config)
+    
+    # Create a copy of actor_result to avoid modifying the original
+    generation_args = {k: v for k, v in actor_result.items() if k not in ["error_history"]}
+    
+    # Add error_history separately
+    if "error_history" in actor_result:
+        error_history = actor_result["error_history"]
+    else:
+        error_history = None
+    
+    # Generate prediction
+    joint_critic.generate_prediction(
+        gt_video_path=cfg.video_path,
+        error_history=error_history,  # Explicitly pass as a named parameter
+        **generation_args,  # Pass all other arguments
+        **cfg.gen_config
+    )
+    
+    # Load and process feedback
     feedback = joint_critic.load_prediction()
-    if cfg.joint_actor.targetted_affordance:
-        assert cfg.joint_actor.targetted_semantic_part is not None
-    return {
+    
+    # Prepare result
+    result = {
         "feedback_score": int(feedback['realism_rating']),
-        "feedback":  json.dumps(feedback, indent=4),
-        "link_placement_path": cfg.joint_actor.link_placement_path,  # will be automatically
-        # populated by the preprocess function
+        "feedback": json.dumps(feedback, indent=4),
+        "link_placement_path": cfg.joint_actor.link_placement_path,
         "targetted_affordance": cfg.joint_actor.targetted_semantic_part,
     }
+    
+    # Include error history in result if we're using it
+    if "error_history" in actor_result:
+        # Start with existing error history
+        result_error_history = actor_result["error_history"].copy()
+        
+        # Add new error if needed
+        if feedback.get('failure_reason') != "success":
+            new_error = {
+                "iteration": iteration,
+                "seed": seed,
+                "error_type": feedback.get('failure_reason'),
+                "description": feedback.get('improvement_suggestion', "No description provided")
+            }
+            
+            # Check if this error is already in history
+            error_exists = False
+            for err in result_error_history:
+                if (err.get("error_type") == new_error["error_type"] and 
+                    err.get("description") == new_error["description"]):
+                    error_exists = True
+                    break
+                    
+            # Add new error if not already in history
+            if not error_exists:
+                result_error_history.append(new_error)
+                
+        # Include updated error_history in result
+        result["error_history"] = result_error_history
+    
+    # Make sure targetted_affordance is available if needed
+    if cfg.joint_actor.targetted_affordance:
+        assert cfg.joint_actor.targetted_semantic_part is not None
+        
+    return result
 
 
 def post_process_iter(best_result, cfg, steps):
@@ -272,6 +349,7 @@ def articulate_joint(prompt: str, steps: Steps, gpu_id: str, cfg: DictConfig) ->
                 e, "joint_error", i, s, cfg),
             retry_kwargs=retry_kwargs,
             post_process_iter=post_process_iter,
+            use_error_history=True  # Enable error history for joint articulation
         )
 
     return steps
