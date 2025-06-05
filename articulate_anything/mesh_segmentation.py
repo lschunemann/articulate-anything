@@ -26,14 +26,18 @@ def load_models(device="cuda"):
     """Load Grounded-SAM-2 and GroundingDINO models"""
     # Build SAM2
     sam2_checkpoint = "/home/link/DreMa/third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
+    # sam2_checkpoint = "/home/link/DreMa/third_party/Grounded-SAM-2/checkpoints/sam2.1_hq_hiera_large.pt"
     model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    # model_cfg = "configs/sam2.1/sam2.1_hq_hiera_l.yaml"
     sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
     sam2_predictor = SAM2ImagePredictor(sam2_model)
     
     # Build GroundingDINO
     grounding_model = load_model(
-        model_config_path="/home/link/DreMa/third_party/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py",
-        model_checkpoint_path="/home/link/DreMa/third_party/Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth",
+        # model_config_path="/home/link/DreMa/third_party/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py",
+        model_config_path="/home/link/DreMa/third_party/Grounded-SAM-2/grounding_dino/groundingdino/config/GroundingDINO_SwinB_cfg.py",
+        # model_checkpoint_path="/home/link/DreMa/third_party/Grounded-SAM-2/gdino_checkpoints/groundingdino_swint_ogc.pth",
+        model_checkpoint_path="/home/link/DreMa/third_party/Grounded-SAM-2/gdino_checkpoints/groundingdino_swinb_cogcoor.pth",
         device=device
     )
     
@@ -177,7 +181,7 @@ def process_multiple_views(input_dir, text_prompt, output_dir):
     # Process each view
     for filename in os.listdir(input_dir):
         # if filename.endswith('.png'):
-        if filename.startswith('render'):
+        if filename.startswith('render') and filename.endswith('.png'):
             input_path = os.path.join(input_dir, filename)
             print(f"Processing {filename}...")
             
@@ -201,14 +205,31 @@ if __name__ == "__main__":
     # video_path = "/home/link/DreMa/third_party/articulate-anything/datasets/in-the-wild-dataset/videos/drawer_RL_Bench.mp4"
     # Make sure each part ends with a dot
     # text_prompt = "only the movable screen part of the laptop, excluding the base." ## this works really well!!
-    #text_prompt = "screen. laptop base."
+    # text_prompt = "screen. wooden base. keyboard."
     #text_prompt = "frame. left sliding door. right sliding door."
     #text_prompt = "body. top drawer. center drawer. lower drawer."
     #text_prompt = "body. top drawer. center drawer. lower drawer."
     # text_prompt = "glass jar. lid."
-    # text_prompt = "cabinet. sliding door." # cabinet
-    text_prompt = "hinge joint.  mounting plate.  handle." # washing machine
+    # text_prompt = "cabinet base. sliding door." # cabinet
+    # text_prompt = "hinge joint.  mounting plate.  handle." # washing machine
     # text_prompt = "Top drawer. Middle drawer. Bottom drawer. Drawer base."
+    # text_prompt = "metal body. door. control panel."
+    # text_prompt = "lid. toilet bowl. water tank. base." # Toilet
+    # text_prompt = "handle. knife." # Partnet blade
+    # text_prompt = "" # Partnet foldchair
+    # text_prompt = "door. fridge body." # Partnet fridge
+    # text_prompt = "laptop base. lid." # Partnet laptop
+    # text_prompt = "door. oven base."# knob." # Partnet oven
+    # text_prompt = "washer. lid."
     # text_prompt = detect_articulated_parts()
-    
-    process_multiple_views(input_dir, text_prompt, output_dir)
+
+    with open(os.path.join(input_dir, "segmentation_targets.txt"), 'r') as f:
+        text_prompt = f.readline()
+
+    # If already ran, skip repeated execution
+    import glob
+    matching_files = glob.glob(f"{output_dir}/render_*_results.json")
+    if matching_files:
+        print(f"Segmentation results already exist for object {args.object}, skipping...")
+    else:
+        process_multiple_views(input_dir, text_prompt, output_dir)
