@@ -30,45 +30,50 @@ def visualize_camera_orientations(camera_files, axis_length=1.0):
         
         print(f"Camera {i} position: {t}")
         
+        right = data['right']
+        up = data['up']
+        view_dir = data['view_dir']
+        
+        # Ensure these are numpy arrays
+        right = np.array(right)
+        up = np.array(up)
+        view_dir = np.array(view_dir)
+        
+        print(f"Camera {i} position: {t}")
+        print(f"  Right: {right}")
+        print(f"  Up: {up}")
+        print(f"  View Dir: {view_dir}")
+        
         # Plot camera position
         ax.scatter(t[0], t[1], t[2], c=colors[i % len(colors)], marker='^', s=100, label=f'Camera {i}')
         
-        # In Blender, the camera looks along the -Z axis with Y up
-        # Extract camera axes from the rotation matrix
-        # R is a world-to-camera rotation matrix
-        # To get camera axes in world space, we transpose R
-        R_cam_to_world = R.T
-        
         # Plot camera axes with clear labels
         # X axis (right) - red
-        x_axis = R_cam_to_world[:, 0] * axis_length
-        ax.quiver(t[0], t[1], t[2], x_axis[0], x_axis[1], x_axis[2], 
-                 color='r', length=axis_length, arrow_length_ratio=0.2)
-        ax.text(t[0] + x_axis[0], t[1] + x_axis[1], t[2] + x_axis[2], "X", color='r')
+        ax.quiver(t[0], t[1], t[2], right[0], right[1], right[2], 
+                    color='r', length=axis_length, arrow_length_ratio=0.2)
+        ax.text(t[0] + right[0]*axis_length, t[1] + right[1]*axis_length, t[2] + right[2]*axis_length, "X", color='r')
         
-        # Y axis (up in camera space) - green
-        y_axis = R_cam_to_world[:, 1] * axis_length
-        ax.quiver(t[0], t[1], t[2], y_axis[0], y_axis[1], y_axis[2], 
-                 color='g', length=axis_length, arrow_length_ratio=0.2)
-        ax.text(t[0] + y_axis[0], t[1] + y_axis[1], t[2] + y_axis[2], "Y", color='g')
+        # Y axis (up) - green
+        ax.quiver(t[0], t[1], t[2], up[0], up[1], up[2], 
+                    color='g', length=axis_length, arrow_length_ratio=0.2)
+        ax.text(t[0] + up[0]*axis_length, t[1] + up[1]*axis_length, t[2] + up[2]*axis_length, "Y", color='g')
         
         # Z axis (viewing direction) - blue
-        z_axis = -R_cam_to_world[:, 2] * axis_length  # Negate because camera looks along -Z
-        ax.quiver(t[0], t[1], t[2], z_axis[0], z_axis[1], z_axis[2], 
-                 color='b', length=axis_length, arrow_length_ratio=0.2)
-        ax.text(t[0] + z_axis[0], t[1] + z_axis[1], t[2] + z_axis[2], "Z", color='b')
+        ax.quiver(t[0], t[1], t[2], -view_dir[0], -view_dir[1], -view_dir[2], 
+                    color='b', length=axis_length, arrow_length_ratio=0.2)
+        ax.text(t[0] - view_dir[0]*axis_length, t[1] - view_dir[1]*axis_length, t[2] - view_dir[2]*axis_length, "Z", color='b')
         
-        # Draw a line from camera to origin
-        ax.plot([t[0], 0], [t[1], 0], [t[2], 0], c=colors[i % len(colors)], linestyle='--', alpha=0.5)
+        # Draw a line from camera to origin (0,0,0.1) as target point
+        ax.plot([t[0], 0], [t[1], 0], [t[2], 0.1], c=colors[i % len(colors)], linestyle='--', alpha=0.5)
     
     # Plot origin
     ax.scatter(0, 0, 0, c='k', marker='*', s=200, label='Origin')
     
     # Set labels and title
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title('Camera Positions and Coordinate Axes')
+    ax.set_xlabel('X_world')
+    ax.set_ylabel('Y_world')
+    ax.set_zlabel('Z_world')
+    ax.set_title('Camera Positions and Coordinate Axes (Blender World)')
     
     # Add legend
     ax.legend()
@@ -93,78 +98,78 @@ def visualize_camera_orientations(camera_files, axis_length=1.0):
     
     return fig, ax
 
-# The corrected back-projection function that worked correctly
-def backproject_depth_blender_fixed(depth_map, K, R, t, max_depth=100.0):
-    """
-    Correctly backproject depth maps from Blender with proper coordinate transformations.
+# # The corrected back-projection function that worked correctly
+# def backproject_depth_blender_fixed(depth_map, K, R, t, max_depth=100.0):
+#     """
+#     Correctly backproject depth maps from Blender with proper coordinate transformations.
     
-    Args:
-        depth_map: Depth map from Blender
-        K: Intrinsic camera matrix
-        R: Rotation matrix (world to camera)
-        t: Camera position in world coordinates
-        max_depth: Maximum depth threshold
-    """
-    # Handle 3-channel depth maps
-    if len(depth_map.shape) == 3:
-        # If it's a 3-channel depth map, take the first channel
-        depth_map = depth_map[:,:,0]
+#     Args:
+#         depth_map: Depth map from Blender
+#         K: Intrinsic camera matrix
+#         R: Rotation matrix (world to camera)
+#         t: Camera position in world coordinates
+#         max_depth: Maximum depth threshold
+#     """
+#     # Handle 3-channel depth maps
+#     if len(depth_map.shape) == 3:
+#         # If it's a 3-channel depth map, take the first channel
+#         depth_map = depth_map[:,:,0]
     
-    # Get image dimensions
-    height, width = depth_map.shape
+#     # Get image dimensions
+#     height, width = depth_map.shape
     
-    # Create pixel coordinates grid
-    y, x = np.indices((height, width))
+#     # Create pixel coordinates grid
+#     y, x = np.indices((height, width))
     
-    # Flatten all arrays
-    x = x.flatten()
-    y = y.flatten()
-    z = depth_map.flatten()
+#     # Flatten all arrays
+#     x = x.flatten()
+#     y = y.flatten()
+#     z = depth_map.flatten()
     
-    # Filter out invalid, zero, or extreme depth values
-    valid = (z > 0) & (z < max_depth) & np.isfinite(z)
-    x = x[valid]
-    y = y[valid]
-    z = z[valid]
+#     # Filter out invalid, zero, or extreme depth values
+#     valid = (z > 0) & (z < max_depth) & np.isfinite(z)
+#     x = x[valid]
+#     y = y[valid]
+#     z = z[valid]
     
-    print(f"Valid depth points: {np.sum(valid)} out of {len(valid)}")
+#     print(f"Valid depth points: {np.sum(valid)} out of {len(valid)}")
     
-    if np.sum(valid) == 0:
-        print("WARNING: No valid depth points found!")
-        return np.array([])
+#     if np.sum(valid) == 0:
+#         print("WARNING: No valid depth points found!")
+#         return np.array([])
     
-    # Convert pixel coordinates to camera coordinates
-    fx = K[0, 0]
-    fy = K[1, 1]
-    cx = K[0, 2]
-    cy = K[1, 2]
+#     # Convert pixel coordinates to camera coordinates
+#     fx = K[0, 0]
+#     fy = K[1, 1]
+#     cx = K[0, 2]
+#     cy = K[1, 2]
     
-    # Calculate 3D coordinates in the camera space
-    # In Blender, the camera looks along -Z, with Y up
-    # So we map: x_pixel -> X, y_pixel -> Y, depth -> -Z
-    x_cam = (x - cx) * z / fx
-    y_cam = (y - cy) * z / fy
-    z_cam = -z  # Negate Z because Blender camera looks down -Z axis
+#     # Calculate 3D coordinates in the camera space
+#     # In Blender, the camera looks along -Z, with Y up
+#     # So we map: x_pixel -> X, y_pixel -> Y, depth -> -Z
+#     x_cam = (x - cx) * z / fx
+#     y_cam = (y - cy) * z / fy
+#     z_cam = -z  # Negate Z because Blender camera looks down -Z axis
     
-    # Create points in camera space
-    points_cam = np.vstack((x_cam, y_cam, z_cam)).T
+#     # Create points in camera space
+#     points_cam = np.vstack((x_cam, y_cam, z_cam)).T
     
-    # Transform from camera space to world space
-    # In Blender, R is world-to-camera rotation
-    # We need its transpose for camera-to-world
-    R_cam_to_world = R.T
+#     # Transform from camera space to world space
+#     # In Blender, R is world-to-camera rotation
+#     # We need its transpose for camera-to-world
+#     R_cam_to_world = R.T
     
-    # Transform points from camera space to world space
-    points_world = np.zeros_like(points_cam)
-    for i, pt in enumerate(points_cam):
-        points_world[i] = R_cam_to_world.dot(pt) + t
+#     # Transform points from camera space to world space
+#     points_world = np.zeros_like(points_cam)
+#     for i, pt in enumerate(points_cam):
+#         points_world[i] = R_cam_to_world.dot(pt) + t
 
-    # flip z axis since point clouds were mirrored
-    points_world[:,2] = -points_world[:,2] # TODO: check if correct
+#     # flip z axis since point clouds were mirrored
+#     points_world[:,2] = -points_world[:,2] # TODO: check if correct
     
-    return points_world
+#     return points_world
 
-def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=None, flip_z=True):
+def backproject_masked_depth(depth_map, mask, K, R, t, view_dir, right, up, max_depth=100.0, label=None, flip_z=True):
     """
     Backproject depth values only for masked regions using the same approach as the working function.
     Modified to handle empty arrays gracefully.
@@ -172,6 +177,8 @@ def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=No
     # Handle 3-channel depth maps
     if len(depth_map.shape) == 3:
         depth_map = depth_map[:,:,0]
+
+    # cv2.imwrite('/tmp/depth.png', depth_map * 50)
     
     # Ensure mask has same shape as depth map
     if mask.shape != depth_map.shape:
@@ -179,13 +186,21 @@ def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=No
             mask = np.any(mask > 0, axis=2)
         else:
             mask = cv2.resize(mask, (depth_map.shape[1], depth_map.shape[0]))
+            mask = mask > 0
     
     # Find coordinates where mask is true
-    y_coords, x_coords = np.where(mask > 0)
+    y_coords, x_coords = np.where(mask == 1)
     
     if len(y_coords) == 0:
         print(f"No points in mask for {label if label else 'unknown'}")
         return np.array([])
+    
+    # # Erode mask to remove unsmooth edges
+    mask_uint8 = (mask > 0).astype(np.uint8)
+    kernel = np.ones((5,5), np.uint8)
+    eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
+    # mask_ = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
+    y_coords, x_coords = np.where(eroded_mask > 0)
     
     # Get depth values at these coordinates
     depth_values = depth_map[y_coords, x_coords]
@@ -217,10 +232,14 @@ def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=No
     cy = K[1, 2]
     
     # Calculate 3D coordinates in camera space
-    # In Blender, the camera looks along -Z, with Y up
-    x_cam = (x_coords - cx) * depth_values / fx
-    y_cam = -(y_coords - cy) * depth_values / fy
-    z_cam = -depth_values  # Negate Z because Blender camera looks down -Z axis
+
+    # Calculate normalized device coordinates
+    x_ndc = (x_coords - cx) / fx
+    y_ndc = (y_coords - cy) / fy
+
+    z_cam = -depth_values  
+    x_cam = x_ndc * depth_values
+    y_cam = -y_ndc * depth_values
     
     # Create points in camera space
     points_cam = np.vstack((x_cam, y_cam, z_cam)).T
@@ -229,11 +248,21 @@ def backproject_masked_depth(depth_map, mask, K, R, t, max_depth=100.0, label=No
     # In Blender, R is world-to-camera rotation
     # We need its transpose for camera-to-world
     R_cam_to_world = R.T
-    
-    # Transform points from camera space to world space
+
     points_world = np.zeros_like(points_cam)
+        
     for i, pt in enumerate(points_cam):
-        points_world[i] = R_cam_to_world.dot(pt) + t
+        # Transform using camera's local coordinate system directly
+        # pt[0] is along right vector, pt[1] is along up vector, pt[2] is along -view_dir
+        points_world[i] = t + (right * pt[0]) + (up * pt[1]) + (-view_dir * pt[2])
+    
+    ## Transform points from camera space to world space
+    ## points_world = np.zeros_like(points_cam)
+    ## for i, pt in enumerate(points_cam):
+    ##     points_world[i] = R_cam_to_world @ pt + t
+    # points_world = (R.T @ points_cam.T).T + t
+    
+    ### points_world[:, 0] = -points_world[:, 0]  # Flip X-axis
         
     return points_world
 
@@ -295,17 +324,17 @@ def visualize_point_cloud_with_cameras(points, labels, camera_params, title, out
                  color='r', length=axis_length, arrow_length_ratio=0.2)
         
         # Y axis (up) - green
-        y_axis = -R_cam_to_world[:, 1] * axis_length
+        y_axis = R_cam_to_world[:, 1] * axis_length
         ax.quiver(t[0], t[1], t[2], y_axis[0], y_axis[1], y_axis[2], 
                  color='g', length=axis_length, arrow_length_ratio=0.2)
         
         # Z axis (view direction) - blue
-        z_axis = -R_cam_to_world[:, 2] * axis_length  # Negate for camera direction
+        z_axis = R_cam_to_world[:, 2] * axis_length  
         ax.quiver(t[0], t[1], t[2], z_axis[0], z_axis[1], z_axis[2], 
                  color='b', length=axis_length, arrow_length_ratio=0.2)
         
-        # Draw line to origin
-        ax.plot([t[0], 0], [t[1], 0], [t[2], 0], 
+        # Draw line to target point (0,0,0.1)
+        ax.plot([t[0], 0], [t[1], 0], [t[2], 0.1], 
                 c=camera_colors[i % len(camera_colors)], linestyle='--', alpha=0.3)
     
     # Add origin
@@ -361,7 +390,7 @@ def sanitize_filename(filename):
 def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OBJECT, output_dir, flip_z=True):
     """
     Lift 2D segmentation masks to 3D points using depth maps and camera parameters.
-    Modified to handle missing segmentation results.
+    Modified to handle missing segmentation results and ensure files are properly aligned.
     """
     all_3d_points = []
     all_labels = []
@@ -373,30 +402,61 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
     # Create a global instance counter for each label
     label_instance_counters = {}
     
-    # Process each view
-    for view_idx in range(len(rgb_images)):
-        print(f"\nProcessing view {view_idx + 1}/{len(rgb_images)}")
-        
-        # Check if we have segmentation results for this view
-        if view_idx >= len(results_paths):
-            print(f"No segmentation results found for view {view_idx + 1}, skipping...")
+    # Extract indices from segmentation result filenames (assuming `render_{OBJECT}_{index}_results.json`)
+    view_indices = []
+    for path in results_paths:
+        try:
+            # Example: render_myobject_123_results.json -> 123
+            filename = os.path.basename(path)
+            prefix = f"render_{OBJECT}_"
+            suffix = "_results.json"
+            if filename.startswith(prefix) and filename.endswith(suffix):
+                index_str = filename[len(prefix):-len(suffix)].split('_')[0]
+                view_indices.append(int(index_str))
+            else:
+                print(f"Warning: Filename format not recognized: {filename}, skipping index extraction.")
+        except Exception as e:
+            print(f"Error extracting index from {path}: {str(e)}")
+            continue
+    
+    print(f"Extracted view indices from segmentation files: {view_indices}")
+    
+    # Process each view that has segmentation results
+    for i, view_idx in enumerate(sorted(list(set(view_indices)))): # Ensure unique and sorted processing
+        # Find the actual result path for this view_idx
+        results_path_for_view = next((path for path in results_paths if f"_{view_idx}_" in path), None)
+        if not results_path_for_view:
+            print(f"No segmentation results found for view {view_idx}, skipping.")
+            continue
+
+        # Ensure we have corresponding camera params and depth map
+        if view_idx >= len(camera_params) or camera_params[view_idx] is None:
+            print(f"Missing camera parameters for view {view_idx}, skipping...")
+            continue
+        if view_idx >= len(depth_maps) or depth_maps[view_idx] is None:
+            print(f"Missing depth map for view {view_idx}, skipping...")
             continue
             
+        print(f"\nProcessing view {view_idx} (index {i+1}/{len(view_indices)} overall)")
+        
         try:
-            # Load masks for this view
-            masks, label_names = load_masks_from_results(results_paths[view_idx], OBJECT)
+            # Load masks for this view from the corresponding results file
+            masks, label_names = load_masks_from_results(results_path_for_view, OBJECT, view_idx)
 
             label_names = [sanitize_filename(label) for label in label_names]
             
             # Skip if no masks were found
             if len(masks) == 0:
-                print(f"No masks found in results for view {view_idx + 1}, skipping...")
+                print(f"No masks found in results for view {view_idx}, skipping...")
                 continue
                 
             # Get camera parameters
             K = camera_params[view_idx]['K']
             R = camera_params[view_idx]['R']
             t = camera_params[view_idx]['t']
+            view_dir = camera_params[view_idx]['view_dir']
+            right = camera_params[view_idx]['right']
+            up = camera_params[view_idx]['up']
             
             # Get depth map
             depth_map = depth_maps[view_idx]
@@ -407,7 +467,7 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
             else:
                 print(f"Depth map has shape {depth_map.shape}")
                 
-            valid_mask = depth_map > 0
+            valid_mask = (depth_map > 0) & (depth_map < 100000)
             if np.any(valid_mask):
                 print(f"Depth range: {np.min(depth_map[valid_mask])} to {np.max(depth_map[valid_mask])}")
             else:
@@ -428,38 +488,30 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
                 label_instance_counters[label_name] += 1
                 
                 # Backproject points for this mask
-                points_3d = backproject_masked_depth(
-                    depth_map, mask, K, R, t, max_depth=100.0, label=label_name, flip_z=flip_z
+                points_3d_per_mask = backproject_masked_depth(
+                    depth_map, mask, K, R, t, view_dir, right, up, max_depth=100.0, label=label_name, flip_z=flip_z
                 )
-                
-                if len(points_3d) == 0:
+
+                if len(points_3d_per_mask) == 0:
                     print(f"No valid 3D points for {label_name} (instance {instance_id})")
                     continue
                     
-                print(f"Generated {len(points_3d)} 3D points for {label_name} (instance {instance_id})")
-                view_points.append(points_3d)
-                view_labels.extend([label_name] * len(points_3d))
-                view_instance_ids.extend([instance_id] * len(points_3d))  # Add instance IDs
+                print(f"Generated {len(points_3d_per_mask)} 3D points for {label_name} (instance {instance_id})")
+                view_points.append(points_3d_per_mask)
+                view_labels.extend([label_name] * len(points_3d_per_mask))
+                view_instance_ids.extend([instance_id] * len(points_3d_per_mask))  # Add instance IDs
 
             # Visualize points for this view if any were generated
             if view_points:
                 view_points = np.vstack(view_points)
                 vis_path = os.path.join(output_dir, f'view_{view_idx}_points.png')
                 
-                # Create camera parameters for visualization
+                # Create camera parameters for visualization (already in Blender World)
                 cam_params_dict = {'R': R, 't': t}
                 
-                # Also flip z-coordinate of camera position for visualization if we're flipping points
-                if flip_z:
-                    t_vis = t.copy()
-                    t_vis[2] = -t_vis[2]
-                    cam_params_vis = {'R': R, 't': t_vis}
-                else:
-                    cam_params_vis = cam_params_dict
-                    
                 visualize_point_cloud_with_cameras(
-                    view_points, np.array(view_instance_ids),  # Use instance IDs instead of labels
-                    [cam_params_vis], 
+                    view_points, np.array(view_instance_ids),  # Use instance IDs for coloring
+                    [cam_params_dict], # Pass camera in Blender World
                     f'View {view_idx} Point Cloud', 
                     vis_path
                 )
@@ -475,6 +527,8 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
                 
         except Exception as e:
             print(f"Error processing view {view_idx}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             print("Skipping this view and continuing...")
             continue
 
@@ -493,25 +547,21 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
     # Visualize combined point cloud
     vis_path = os.path.join(output_dir, 'combined_point_cloud.png')
     
-    # Prepare camera parameters for visualization
-    all_camera_params = []
-    for params in camera_params:
-        if flip_z:
-            t_vis = params['t'].copy()
-            t_vis[2] = -t_vis[2]
-            all_camera_params.append({'R': params['R'], 't': t_vis})
-        else:
-            all_camera_params.append({'R': params['R'], 't': params['t']})
+    # Prepare camera parameters for visualization - only include cameras for views we processed
+    all_camera_params_vis = []
+    for idx in sorted(list(set(view_indices))): # Use sorted unique indices
+        if idx < len(camera_params) and camera_params[idx] is not None:
+            all_camera_params_vis.append({'R': camera_params[idx]['R'], 't': camera_params[idx]['t']})
             
     visualize_point_cloud_with_cameras(
-        points_3d, instance_ids, all_camera_params,  # Use instance IDs for visualization
+        points_3d, instance_ids, all_camera_params_vis,  # Use instance IDs for visualization
         'Combined Point Cloud', 
         vis_path
     )
     
     return points_3d, labels, instance_ids  # Return instance IDs as well
 
-def load_masks_from_results(results_path, OBJECT):
+def load_masks_from_results(results_path, OBJECT, view):
     """Load masks from the JSON results file with better error handling"""
     print(f"Loading masks from {results_path}")
     
@@ -534,11 +584,21 @@ def load_masks_from_results(results_path, OBJECT):
         masks = []
         labels = []
         
-        for annotation in results['annotations']:
+        for i, annotation in enumerate(results['annotations']):
             try:
                 rle = annotation['segmentation']
                 rle['counts'] = rle['counts'].encode('utf-8')
                 mask = mask_util.decode(rle)
+
+                # Print mask statistics
+                mask_sum = np.sum(mask)
+                mask_shape = mask.shape
+                print(f"  Decoded mask: shape={mask_shape}, nonzero={mask_sum} pixels")
+
+                mask_vis_path = f"{'/'.join(results_path.split('/')[:-1])}/mask_{annotation['class_name']}_view_{view}.png"
+                cv2.imwrite(mask_vis_path, mask * 255)
+                print(f"  Saved mask visualization to {mask_vis_path}")
+                
                 
                 masks.append(mask)
                 labels.append(annotation['class_name'])
@@ -866,7 +926,7 @@ def merge_instances_with_two_pass_approach(mesh, point_clouds_by_instance, insta
     clusters = [cluster for cluster in clusters if cluster]
     
     # Skip second pass if we already have min_clusters or fewer clusters
-    if len(clusters) <= min_clusters:
+    if len(clusters) <= min_clusters or True:
         print(f"Second pass skipped - already have only {len(clusters)} clusters (minimum: {min_clusters})")
         return instance_mapping, clusters
     
@@ -1499,8 +1559,23 @@ def analyze_part_structure(segmented_points, point_labels, unique_labels):
 def enforce_structural_constraints(mesh, vertex_labels, part_structures):
     """
     Enforce structural constraints based on part analysis.
+    Fixed to work with pre-computed vertex neighbors.
     """
     import numpy as np
+    
+    print("Enforcing structural constraints...")
+    
+    # Create vertex neighborhood list if not already done
+    if not hasattr(mesh, 'vertex_neighbors_list'):
+        print("  Building vertex neighborhood list...")
+        mesh.vertex_neighbors_list = [set() for _ in range(len(mesh.vertices))]
+        for face in mesh.faces:
+            mesh.vertex_neighbors_list[face[0]].add(face[1])
+            mesh.vertex_neighbors_list[face[0]].add(face[2])
+            mesh.vertex_neighbors_list[face[1]].add(face[0])
+            mesh.vertex_neighbors_list[face[1]].add(face[2])
+            mesh.vertex_neighbors_list[face[2]].add(face[0])
+            mesh.vertex_neighbors_list[face[2]].add(face[1])
     
     # Iterate through each part
     for label, structure in part_structures.items():
@@ -1511,7 +1586,7 @@ def enforce_structural_constraints(mesh, vertex_labels, part_structures):
             continue
             
         # For planar parts: check if vertices deviate too much from the plane
-        if structure['is_planar'] and len(part_vertices) > 10:
+        if structure.get('is_planar', False) and len(part_vertices) > 10:
             # Get the plane normal (direction of smallest variance)
             plane_normal = structure['eigenvectors'][:, 2]
             
@@ -1530,7 +1605,7 @@ def enforce_structural_constraints(mesh, vertex_labels, part_structures):
             for idx in outliers:
                 # Get neighboring labels (excluding this part)
                 neighbor_labels = []
-                for n in mesh.vertex_neighbors(idx):
+                for n in mesh.vertex_neighbors_list[idx]:
                     if vertex_labels[n] != label:
                         neighbor_labels.append(vertex_labels[n])
                 
@@ -1540,19 +1615,43 @@ def enforce_structural_constraints(mesh, vertex_labels, part_structures):
                     vertex_labels[idx] = Counter(neighbor_labels).most_common(1)[0][0]
         
         # For cylindrical parts: similar constraint based on distance to axis
-        if structure['is_cylindrical'] and len(part_vertices) > 20:
+        if structure.get('is_cylindrical', False) and len(part_vertices) > 20:
             # Get the cylinder axis (direction of largest variance)
             axis = structure['eigenvectors'][:, 0]
             
-            # Similar approach to enforce cylinder shape
-            # [Implementation details would go here]
+            # Get centroid of the part
+            part_positions = mesh.vertices[part_vertices]
+            centroid = np.mean(part_positions, axis=0)
+            
+            # Calculate distance from each point to the axis
+            # d = |cross(point-centroid, axis)|/|axis|
+            v = part_positions - centroid
+            cross_products = np.cross(v, axis)
+            distances = np.linalg.norm(cross_products, axis=1) / np.linalg.norm(axis)
+            
+            # Find outliers that deviate significantly from the cylinder
+            threshold = np.percentile(distances, 95) * 2  # 2x the 95th percentile
+            outliers = part_vertices[distances > threshold]
+            
+            # Mark these outliers for reconsideration
+            for idx in outliers:
+                # Get neighboring labels (excluding this part)
+                neighbor_labels = []
+                for n in mesh.vertex_neighbors_list[idx]:
+                    if vertex_labels[n] != label:
+                        neighbor_labels.append(vertex_labels[n])
+                
+                if neighbor_labels:
+                    # Assign to most common neighboring label
+                    from collections import Counter
+                    vertex_labels[idx] = Counter(neighbor_labels).most_common(1)[0][0]
     
     return vertex_labels
 
-# Simplified and optimized version
 def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_labels, max_distance=0.05):
     """
     Optimized version of structure-aware mesh segmentation.
+    Fixed to work with pre-computed vertex neighbors.
     """
     import numpy as np
     import networkx as nx
@@ -1581,14 +1680,15 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
     
     # Step 2: Build mesh connectivity graph early (for faster access)
     print("  Building mesh connectivity...")
-    vertex_neighbors = [set() for _ in range(len(mesh.vertices))]
-    for face in mesh.faces:
-        vertex_neighbors[face[0]].add(face[1])
-        vertex_neighbors[face[0]].add(face[2])
-        vertex_neighbors[face[1]].add(face[0])
-        vertex_neighbors[face[1]].add(face[2])
-        vertex_neighbors[face[2]].add(face[0])
-        vertex_neighbors[face[2]].add(face[1])
+    if not hasattr(mesh, 'vertex_neighbors_list'):
+        mesh.vertex_neighbors_list = [set() for _ in range(len(mesh.vertices))]
+        for face in mesh.faces:
+            mesh.vertex_neighbors_list[face[0]].add(face[1])
+            mesh.vertex_neighbors_list[face[0]].add(face[2])
+            mesh.vertex_neighbors_list[face[1]].add(face[0])
+            mesh.vertex_neighbors_list[face[1]].add(face[2])
+            mesh.vertex_neighbors_list[face[2]].add(face[0])
+            mesh.vertex_neighbors_list[face[2]].add(face[1])
     
     # Step 3: Initial label assignment based on proximity
     print("  Performing initial proximity-based assignment...")
@@ -1596,7 +1696,7 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
     distances, indices = kdtree.query(mesh.vertices, k=1)
     
     # Get initial assignments for vertices close enough to point cloud
-    vertex_labels = np.full(len(mesh.vertices), None, dtype=object)
+    vertex_labels = np.full(len(mesh.vertices), "", dtype=object)
     confidence = np.zeros(len(mesh.vertices))
     
     close_enough = distances < max_distance
@@ -1607,7 +1707,7 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
     
     # Step 4: Fast label propagation with structural guidance
     print("  Propagating labels...")
-    unlabeled = np.where(vertex_labels == None)[0]
+    unlabeled = np.where(vertex_labels == "")[0]
     iterations = 0
     max_iterations = 20  # Limit iterations
     
@@ -1618,8 +1718,8 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
         for vertex_idx in unlabeled:
             # Get labels of neighbors
             neighbor_labels = [
-                vertex_labels[n] for n in vertex_neighbors[vertex_idx]
-                if vertex_labels[n] is not None
+                vertex_labels[n] for n in mesh.vertex_neighbors_list[vertex_idx]
+                if vertex_labels[n] != ""
             ]
             
             if neighbor_labels:
@@ -1641,25 +1741,25 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
         iterations += 1
     
     # Step 5: Assign any remaining unlabeled vertices
-    still_unlabeled = np.where(vertex_labels == None)[0]
+    still_unlabeled = np.where(vertex_labels == "")[0]
     if len(still_unlabeled) > 0:
         print(f"  Assigning {len(still_unlabeled)} remaining vertices...")
         
         # Find closest labeled vertex for each unlabeled one
         for vertex_idx in still_unlabeled:
             # Use BFS to find closest labeled vertex
-            queue = list(vertex_neighbors[vertex_idx])
+            queue = list(mesh.vertex_neighbors_list[vertex_idx])
             visited = set([vertex_idx])
             found_label = None
             
             while queue and found_label is None:
                 neighbor = queue.pop(0)
-                if vertex_labels[neighbor] is not None:
+                if vertex_labels[neighbor] != "":
                     found_label = vertex_labels[neighbor]
                     break
                 
                 visited.add(neighbor)
-                for next_neighbor in vertex_neighbors[neighbor]:
+                for next_neighbor in mesh.vertex_neighbors_list[neighbor]:
                     if next_neighbor not in visited and next_neighbor not in queue:
                         queue.append(next_neighbor)
             
@@ -1668,7 +1768,7 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
                 confidence[vertex_idx] = 0.5  # Lower confidence for distant assignments
             else:
                 # If BFS fails (disconnected component), use nearest labeled vertex in 3D space
-                labeled_vertices = np.where(vertex_labels != None)[0]
+                labeled_vertices = np.where(vertex_labels != "")[0]
                 tree = cKDTree(mesh.vertices[labeled_vertices])
                 _, nn_idx = tree.query(mesh.vertices[vertex_idx].reshape(1, -1))
                 vertex_labels[vertex_idx] = vertex_labels[labeled_vertices[nn_idx[0]]]
@@ -1684,7 +1784,7 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
                 
             # Get neighbor labels
             neighbor_labels = [
-                vertex_labels[n] for n in vertex_neighbors[i]
+                vertex_labels[n] for n in mesh.vertex_neighbors_list[i]
             ]
             
             if neighbor_labels:
@@ -1698,6 +1798,245 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
     
     print("Segmentation complete!")
     return vertex_labels
+
+def process_mesh_segmentation(mesh, vertex_labels, segmented_points, combined_identifiers):
+    """
+    Process mesh segmentation to ensure quality results for any object type.
+    This function:
+    1. Enforces that each part has connected components
+    2. Ensures all vertices are assigned
+    3. Maintains clear boundaries between parts
+    
+    Args:
+        mesh: Trimesh mesh object
+        vertex_labels: Array of initial vertex labels
+        segmented_points: Nx3 array of original point cloud points
+        combined_identifiers: Labels for each point in segmented_points
+        
+    Returns:
+        Updated vertex_labels with improved segmentation
+    """
+    import numpy as np
+    from collections import deque
+    from scipy.spatial import cKDTree
+    
+    print("Processing mesh segmentation for optimal results...")
+    
+    # Get unique labels
+    unique_labels = np.unique(vertex_labels)
+    unique_labels = [label for label in unique_labels if label != ""]
+    
+    if len(unique_labels) == 0:
+        print("  No valid labels found")
+        return vertex_labels
+    
+    # Step 1: Identify connected components for each label
+    print("  Identifying connected components...")
+    label_components = {}
+    
+    for label in unique_labels:
+        vertices_with_label = np.where(vertex_labels == label)[0]
+        
+        if len(vertices_with_label) == 0:
+            continue
+        
+        # Find connected components
+        components = []
+        unvisited = set(vertices_with_label)
+        
+        while unvisited:
+            start_vertex = next(iter(unvisited))
+            component = set()
+            queue = deque([start_vertex])
+            
+            while queue:
+                vertex = queue.popleft()
+                if vertex not in unvisited:
+                    continue
+                
+                component.add(vertex)
+                unvisited.remove(vertex)
+                
+                for neighbor in mesh.vertex_neighbors_list[vertex]:
+                    if neighbor in unvisited:
+                        queue.append(neighbor)
+            
+            components.append(component)
+        
+        label_components[label] = components
+        
+        print(f"    Label {label}: {len(vertices_with_label)} vertices in {len(components)} components")
+    
+    # Step 2: Evaluate component quality using point cloud
+    print("  Evaluating component quality...")
+    point_cloud_tree = cKDTree(segmented_points)
+    
+    component_quality = {}
+    
+    for label, components in label_components.items():
+        component_quality[label] = []
+        
+        for comp_idx, component in enumerate(components):
+            # Skip very small components
+            if len(component) < 10:
+                component_quality[label].append({
+                    'index': comp_idx,
+                    'quality': 0.0,
+                    'size': len(component)
+                })
+                continue
+            
+            # Get vertices in this component
+            component_vertices = list(component)
+            component_positions = mesh.vertices[component_vertices]
+            
+            # Find nearest points in the point cloud
+            distances, indices = point_cloud_tree.query(component_positions, k=1)
+            
+            # Calculate match quality
+            match_mask = combined_identifiers[indices] == label
+            match_count = np.sum(match_mask)
+            match_quality = match_count / len(component)
+            
+            component_quality[label].append({
+                'index': comp_idx,
+                'quality': match_quality,
+                'size': len(component),
+                'match_count': match_count
+            })
+    
+    # Step 3: Merge components for each label
+    print("  Merging components...")
+    new_vertex_labels = np.full(len(mesh.vertices), "", dtype=object)
+    
+    for label in unique_labels:
+        if label not in component_quality or len(component_quality[label]) == 0:
+            continue
+            
+        # Get all components with reasonable quality for this label
+        good_components = [c for c in component_quality[label] if c['quality'] >= 0.3]
+        
+        if good_components:
+            # Sort by size for stable results (largest first)
+            good_components.sort(key=lambda x: x['size'], reverse=True)
+            
+            print(f"    Label {label}: Keeping {len(good_components)} quality components")
+            
+            # Assign all vertices in good components to this label
+            for comp in good_components:
+                comp_idx = comp['index']
+                component = label_components[label][comp_idx]
+                
+                for vertex in component:
+                    new_vertex_labels[vertex] = label
+        else:
+            # If no good components, fall back to largest component
+            components = label_components[label]
+            if components:
+                largest_comp = max(components, key=len)
+                print(f"    Label {label}: No good components, using largest ({len(largest_comp)} vertices)")
+                
+                for vertex in largest_comp:
+                    new_vertex_labels[vertex] = label
+    
+    # Step 4: Check for unlabeled vertices and assign them to nearest labeled vertex
+    unlabeled = np.where(new_vertex_labels == "")[0]
+    if len(unlabeled) > 0:
+        print(f"  Assigning {len(unlabeled)} unlabeled vertices...")
+        
+        # Get labeled vertices
+        labeled = np.where(new_vertex_labels != "")[0]
+        
+        if len(labeled) > 0:
+            # Build graph and flood-fill from nearest labeled vertex
+            for vertex in unlabeled:
+                # First check direct neighbors
+                neighbors = mesh.vertex_neighbors_list[vertex]
+                neighbor_labels = {}
+                
+                for n in neighbors:
+                    nl = new_vertex_labels[n]
+                    if nl != "":
+                        if nl not in neighbor_labels:
+                            neighbor_labels[nl] = 0
+                        neighbor_labels[nl] += 1
+                
+                if neighbor_labels:
+                    # Assign to most common neighbor label
+                    new_vertex_labels[vertex] = max(neighbor_labels.items(), key=lambda x: x[1])[0]
+                else:
+                    # No labeled neighbors, use BFS to find closest labeled vertex
+                    visited = set([vertex])
+                    queue = deque(neighbors)
+                    found_label = None
+                    
+                    while queue and found_label is None:
+                        next_vertex = queue.popleft()
+                        if next_vertex in visited:
+                            continue
+                            
+                        visited.add(next_vertex)
+                        
+                        if new_vertex_labels[next_vertex] != "":
+                            found_label = new_vertex_labels[next_vertex]
+                            break
+                        
+                        for n in mesh.vertex_neighbors_list[next_vertex]:
+                            if n not in visited and n not in queue:
+                                queue.append(n)
+                    
+                    if found_label is not None:
+                        new_vertex_labels[vertex] = found_label
+                    else:
+                        # BFS failed - use closest labeled vertex in 3D space
+                        kdtree = cKDTree(mesh.vertices[labeled])
+                        _, nn_idx = kdtree.query(mesh.vertices[vertex].reshape(1, -1))
+                        new_vertex_labels[vertex] = new_vertex_labels[labeled[nn_idx[0]]]
+    
+    # Step 5: Smooth boundaries between parts
+    boundary_vertices = set()
+    for vertex in range(len(mesh.vertices)):
+        label = new_vertex_labels[vertex]
+        for neighbor in mesh.vertex_neighbors_list[vertex]:
+            if new_vertex_labels[neighbor] != label:
+                boundary_vertices.add(vertex)
+                break
+    
+    if boundary_vertices:
+        print(f"  Smoothing {len(boundary_vertices)} boundary vertices...")
+        
+        # Simple smoothing - assign each boundary vertex to the most common label among neighbors
+        for _ in range(2):  # 2 iterations of smoothing
+            updates = {}
+            
+            for vertex in boundary_vertices:
+                neighbor_labels = {}
+                for n in mesh.vertex_neighbors_list[vertex]:
+                    nl = new_vertex_labels[n]
+                    if nl not in neighbor_labels:
+                        neighbor_labels[nl] = 0
+                    neighbor_labels[nl] += 1
+                
+                if neighbor_labels:
+                    most_common = max(neighbor_labels.items(), key=lambda x: x[1])[0]
+                    if most_common != new_vertex_labels[vertex]:
+                        updates[vertex] = most_common
+            
+            # Apply updates
+            for vertex, new_label in updates.items():
+                new_vertex_labels[vertex] = new_label
+            
+            if not updates:
+                break
+    
+    # Check final result
+    final_unlabeled = np.sum(new_vertex_labels == "")
+    if final_unlabeled > 0:
+        print(f"  WARNING: {final_unlabeled} vertices remain unlabeled")
+    else:
+        print("  All vertices successfully labeled")
+    
+    return new_vertex_labels
 
 def calculate_merge_score(part1, part2, mesh):
     """
@@ -2319,6 +2658,241 @@ def evaluate_boundary_smoothness(part1, part2, mesh):
     
     return combined_score
 
+def refine_part_boundaries(mesh, vertex_labels):
+    """
+    A simplified approach to:
+    1. Remove disconnected components
+    2. Create smooth boundaries
+    """
+    import numpy as np
+    from collections import deque, Counter
+    
+    print("Refining part boundaries (simplified approach)...")
+    
+    # Get unique labels
+    unique_labels = np.unique(vertex_labels)
+    unique_labels = [label for label in unique_labels if label != ""]
+    
+    if len(unique_labels) < 2:
+        print("  Not enough parts to refine boundaries")
+        return vertex_labels
+        
+    # STEP 1: First remove small disconnected components
+    print("  Step 1: Removing disconnected components...")
+    
+    # Process each label separately
+    for label in unique_labels:
+        # Get vertices with this label
+        part_vertices = np.where(vertex_labels == label)[0]
+        
+        # Find connected components using BFS
+        components = []
+        unvisited = set(part_vertices)
+        
+        while unvisited:
+            start_vertex = next(iter(unvisited))
+            component = []
+            queue = deque([start_vertex])
+            
+            while queue:
+                vertex = queue.popleft()
+                if vertex not in unvisited:
+                    continue
+                    
+                component.append(vertex)
+                unvisited.remove(vertex)
+                
+                for neighbor in mesh.vertex_neighbors_list[vertex]:
+                    if neighbor in unvisited:
+                        queue.append(neighbor)
+            
+            components.append(component)
+        
+        if len(components) > 1:
+            # Sort components by size (largest first)
+            components.sort(key=len, reverse=True)
+            
+            # Keep only the largest component
+            largest_component = set(components[0])
+            other_vertices = set()
+            
+            for comp in components[1:]:
+                other_vertices.update(comp)
+            
+            print(f"    Label {label}: Keeping main component ({len(largest_component)} vertices), "
+                 f"removing {len(components)-1} smaller components ({len(other_vertices)} vertices)")
+            
+            # Mark small component vertices for reassignment
+            for vertex in other_vertices:
+                vertex_labels[vertex] = f"TO_REASSIGN:{label}"
+    
+    # STEP 2: Find areas with triangle-shaped jagged edges
+    print("  Step 2: Identifying jagged boundary areas...")
+    
+    # Find boundary vertices
+    boundary_vertices = []
+    
+    for vertex in range(len(mesh.vertices)):
+        if vertex_labels[vertex] == "" or vertex_labels[vertex].startswith("TO_REASSIGN:"):
+            continue
+            
+        label = vertex_labels[vertex]
+        neighbors = mesh.vertex_neighbors_list[vertex]
+        
+        different_labels = False
+        for neighbor in neighbors:
+            if (vertex_labels[neighbor] != "" and 
+                not vertex_labels[neighbor].startswith("TO_REASSIGN:") and
+                vertex_labels[neighbor] != label):
+                different_labels = True
+                break
+        
+        if different_labels:
+            boundary_vertices.append(vertex)
+    
+    print(f"    Found {len(boundary_vertices)} boundary vertices")
+    
+    # Detect jagged edges by looking at neighbor label patterns
+    jagged_edges = set()
+    
+    for vertex in boundary_vertices:
+        # Get this vertex's label
+        label = vertex_labels[vertex]
+        
+        # Get neighbor labels
+        neighbors = mesh.vertex_neighbors_list[vertex]
+        neighbor_labels = [vertex_labels[n] for n in neighbors 
+                          if vertex_labels[n] != "" and not vertex_labels[n].startswith("TO_REASSIGN:")]
+        
+        # Count occurrences of each label
+        label_counts = Counter(neighbor_labels)
+        
+        # If this vertex has more neighbors from a different label, it might be jagged
+        for other_label, count in label_counts.items():
+            if other_label != label and count > 1:
+                # Count same-label neighbors
+                same_label_count = label_counts.get(label, 0)
+                
+                # If more different-label neighbors, mark as jagged
+                if count > same_label_count:
+                    jagged_edges.add(vertex)
+                    break
+    
+    print(f"    Identified {len(jagged_edges)} vertices in jagged areas")
+    
+    # STEP 3: Reassign any problem vertices
+    print("  Step 3: Reassigning problematic vertices...")
+    
+    # First reassign disconnected components
+    to_reassign = [v for v in range(len(vertex_labels)) 
+                  if isinstance(vertex_labels[v], str) and vertex_labels[v].startswith("TO_REASSIGN:")]
+    
+    for vertex in to_reassign:
+        # Get neighbors with labels
+        neighbors = mesh.vertex_neighbors_list[vertex]
+        neighbor_labels = Counter()
+        
+        for neighbor in neighbors:
+            if (vertex_labels[neighbor] != "" and 
+                not vertex_labels[neighbor].startswith("TO_REASSIGN:")):
+                neighbor_labels[vertex_labels[neighbor]] += 1
+        
+        if neighbor_labels:
+            # Assign to most common neighbor label
+            vertex_labels[vertex] = neighbor_labels.most_common(1)[0][0]
+        else:
+            # No labeled neighbors - keep original label but remove "TO_REASSIGN:" prefix
+            original_label = vertex_labels[vertex][12:]  # Remove "TO_REASSIGN:" prefix
+            vertex_labels[vertex] = original_label
+    
+    print(f"    Reassigned {len(to_reassign)} vertices from disconnected components")
+    
+    # Then smooth jagged edges
+    smooth_iterations = 3
+    
+    for iteration in range(smooth_iterations):
+        updates = {}
+        
+        for vertex in jagged_edges:
+            # Get neighbor labels
+            neighbors = mesh.vertex_neighbors_list[vertex]
+            neighbor_labels = Counter()
+            
+            for neighbor in neighbors:
+                if vertex_labels[neighbor] != "":
+                    neighbor_labels[vertex_labels[neighbor]] += 1
+            
+            if neighbor_labels:
+                # Get most common label
+                most_common = neighbor_labels.most_common(1)[0]
+                
+                # If different from current and has majority, update
+                if most_common[0] != vertex_labels[vertex] and most_common[1] > len(neighbors) / 2:
+                    updates[vertex] = most_common[0]
+        
+        # Apply updates
+        for vertex, new_label in updates.items():
+            vertex_labels[vertex] = new_label
+        
+        print(f"    Smoothing iteration {iteration+1}: Updated {len(updates)} vertices")
+        
+        if not updates:
+            break
+    
+    # STEP 4: Final boundary smoothing
+    print("  Step 4: Final boundary smoothing...")
+    
+    # Re-identify boundary vertices
+    boundary_vertices = []
+    
+    for vertex in range(len(mesh.vertices)):
+        if vertex_labels[vertex] == "":
+            continue
+            
+        label = vertex_labels[vertex]
+        neighbors = mesh.vertex_neighbors_list[vertex]
+        
+        different_labels = False
+        for neighbor in neighbors:
+            if vertex_labels[neighbor] != "" and vertex_labels[neighbor] != label:
+                different_labels = True
+                break
+        
+        if different_labels:
+            boundary_vertices.append(vertex)
+    
+    # Apply multiple smoothing passes
+    for iteration in range(3):
+        updates = {}
+        
+        for vertex in boundary_vertices:
+            # Get neighbor labels
+            neighbors = mesh.vertex_neighbors_list[vertex]
+            neighbor_labels = Counter()
+            
+            for neighbor in neighbors:
+                if vertex_labels[neighbor] != "":
+                    neighbor_labels[vertex_labels[neighbor]] += 1
+            
+            if neighbor_labels:
+                # Get most common label
+                most_common = neighbor_labels.most_common(1)[0]
+                
+                # If different from current and has majority, update
+                if most_common[0] != vertex_labels[vertex] and most_common[1] > len(neighbors) / 2:
+                    updates[vertex] = most_common[0]
+        
+        # Apply updates
+        for vertex, new_label in updates.items():
+            vertex_labels[vertex] = new_label
+        
+        print(f"    Final smoothing iteration {iteration+1}: Updated {len(updates)} vertices")
+        
+        if not updates:
+            break
+    
+    return vertex_labels
+
 def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, output_dir, OBJECT, flip_mesh_z=False, inverse_transform=None):
     """
     Segment a mesh into parts based on point labels and instance IDs using structure-aware segmentation.
@@ -2379,9 +2953,15 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
     print("\nPerforming structure-aware segmentation...")
     vertex_labels = segment_mesh_structure_aware(mesh, segmented_points, combined_identifiers, unique_combined_ids)
     
-    # Finally, enforce structural constraints
+    # enforce structural constraints
     print("\nEnforcing structural constraints...")
     vertex_labels = enforce_structural_constraints(mesh, vertex_labels, part_structures)
+
+    # # merge components
+    # vertex_labels = process_mesh_segmentation(mesh, vertex_labels, segmented_points, combined_identifiers)
+
+    # # refine boundaries between parts
+    # vertex_labels = refine_part_boundaries(mesh, vertex_labels)
     
     # Count assigned vertices
     labeled_vertices = np.sum(vertex_labels != "")
@@ -2395,7 +2975,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
         # Split part_id into base_label and instance components
         parts = part_id.split('_')
         if len(parts) >= 2:
-            base_label = parts[0]
+            base_label = '_'.join(parts[:-1])
             instance_num = parts[-1]  # Take the last part as instance number
         else:
             base_label = part_id
@@ -2417,7 +2997,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
         face_mask = np.all(face_has_label, axis=1)
         
         # Additionally, include faces that have majority (2 of 3) vertices with this label
-        majority_mask = np.sum(face_has_label, axis=1) >= 2
+        majority_mask = np.sum(face_has_label, axis=1) >= 2 # Do NOT delete
         face_mask = face_mask | majority_mask
         
         if not np.any(face_mask):
@@ -2482,7 +3062,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
             part_mesh.apply_transform(inverse_transform)
             print("Applied inverse transformation to restore original orientation")
         else:
-            theta = np.radians(-90)  # -90 box, +90 laptop & drawer
+            theta = np.radians(90)  # -90 box, +90 laptop & drawer
             rot_z_neg90 = np.array([
                 [np.cos(theta), -np.sin(theta), 0, 0],
                 [np.sin(theta), np.cos(theta), 0, 0],
@@ -2561,11 +3141,8 @@ def load_blender_depth_exr(filepath):
         height = dw.max.y - dw.min.y + 1
         
         # Determine which channel has the depth information
-        # Blender typically stores depth in Z channel, but could be R/G/B
         channels = header['channels']
         channel_names = list(channels.keys())
-        
-        print(f"Available channels in EXR: {channel_names}")
         
         # Try Z first, then R, G, B
         depth_channel = None
@@ -2577,8 +3154,6 @@ def load_blender_depth_exr(filepath):
         if depth_channel is None:
             depth_channel = channel_names[0]  # Use first available channel
             
-        print(f"Using channel '{depth_channel}' for depth")
-        
         # Get pixel type
         pixel_type = channels[depth_channel].type
         
@@ -2596,6 +3171,7 @@ def load_blender_depth_exr(filepath):
             
         # Reshape to 2D
         depth = depth.reshape(height, width)
+        print(f"Loaded depth with OpenEXR from {filepath}, using channel '{depth_channel}'")
         
     except (ImportError, ModuleNotFoundError):
         print("OpenEXR not available, trying alternative method...")
@@ -2608,6 +3184,7 @@ def load_blender_depth_exr(filepath):
             # If multi-channel, take first channel
             if len(depth.shape) == 3:
                 depth = depth[:,:,0]
+            print(f"Loaded depth with imageio from {filepath}")
                 
         except (ImportError, ModuleNotFoundError):
             print("imageio not available, trying OpenCV...")
@@ -2621,16 +3198,17 @@ def load_blender_depth_exr(filepath):
                 # If multi-channel, take first channel
                 if len(depth.shape) == 3:
                     depth = depth[:,:,0]
+                print(f"Loaded depth with OpenCV from {filepath}")
                     
             except Exception as e:
                 print(f"Failed to load depth with OpenCV: {e}")
                 # If all else fails, create a dummy depth map
-                print("WARNING: Creating placeholder depth map")
-                depth = np.ones((512, 512), dtype=np.float32)
+                print("WARNING: Creating placeholder depth map (failed to load from file)")
+                depth = np.ones((512, 512), dtype=np.float32) # Fallback if all fails
     
     # Print statistics
     print(f"Loaded depth with shape {depth.shape}, dtype {depth.dtype}")
-    valid_mask = ~np.isnan(depth) & ~np.isinf(depth) & (depth > 0)
+    valid_mask = ~np.isnan(depth) & ~np.isinf(depth) & (depth > 0) & (depth < 100000)
     if np.any(valid_mask):
         print(f"Valid depth range: {np.min(depth[valid_mask]):.6f} to {np.max(depth[valid_mask]):.6f}")
         print(f"Mean valid depth: {np.mean(depth[valid_mask]):.6f}")
@@ -2641,7 +3219,7 @@ def load_blender_depth_exr(filepath):
 
 def visualize_point_cloud_with_mesh(points, labels, mesh, output_path, flip_mesh_z=True):
     """
-    Visualize point cloud and mesh to check alignment, with fallback for headless environments.
+    Visualize point cloud and mesh to check alignment.
     Make mesh more prominent and point clouds more transparent.
     
     Args:
@@ -2649,225 +3227,107 @@ def visualize_point_cloud_with_mesh(points, labels, mesh, output_path, flip_mesh
         labels: Array of labels for each point
         mesh: Trimesh mesh object
         output_path: Path to save the visualization
-        flip_mesh_z: Whether to flip the Z coordinate of the mesh to match points
+        flip_mesh_z: (UNUSED in final version, kept for compatibility) Whether to flip the Z coordinate of the mesh to match points
     """
     import numpy as np
     import os
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
     
     # Create output directory if needed
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    # First try using matplotlib (more widely compatible)
-    try:
-        print("Visualizing with matplotlib...")
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D
-        
-        fig = plt.figure(figsize=(14, 12))
-        ax = fig.add_subplot(111, projection='3d')
-        
-        # Create a color map for the unique labels
-        unique_labels = np.unique(labels)
-        colors = plt.cm.tab10.colors
-        
-        # Plot mesh first so it's in the background
-        mesh_vertices = np.array(mesh.vertices)
-        if flip_mesh_z:
-            mesh_vertices[:, 2] = -mesh_vertices[:, 2]
-            mesh_vertices[:, 1] = -mesh_vertices[:, 1]
-
-        # Apply Z offset
-        # mesh_vertices[:, 2] -= 1.0
-            
-        # Plot mesh vertices with higher visibility
-        ax.scatter(
-            mesh_vertices[:, 0], mesh_vertices[:, 1], mesh_vertices[:, 2],
-            c='black', marker='.', s=2, alpha=0.5, label='Mesh Vertices'
-        )
-        
-        # Plot mesh wireframe for better visibility
-        # This is computationally expensive for large meshes, so limit the faces
-        mesh_faces = np.array(mesh.faces)
-        max_faces = min(5000, len(mesh_faces))
-        if len(mesh_faces) > max_faces:
-            step = len(mesh_faces) // max_faces
-            mesh_faces = mesh_faces[::step]
-        
-        for face in mesh_faces:
-            vertices = mesh_vertices[face]
-            # Draw each edge of the triangle
-            for i in range(3):
-                ax.plot3D(
-                    [vertices[i, 0], vertices[(i+1)%3, 0]],
-                    [vertices[i, 1], vertices[(i+1)%3, 1]],
-                    [vertices[i, 2], vertices[(i+1)%3, 2]],
-                    color='gray', linewidth=0.5, alpha=0.3
-                )
-        
-        # Plot the point cloud with colors by label (more transparent)
-        for i, label in enumerate(unique_labels):
-            mask = labels == label
-            if np.any(mask):
-                ax.scatter(
-                    points[mask, 0], points[mask, 1], points[mask, 2],
-                    c=[colors[i % len(colors)]],
-                    marker='.', s=1, alpha=0.3, label=label
-                )
-        
-        # Add coordinate axes
-        ax.quiver(0, 0, 0, 1, 0, 0, color='r', label='X axis')
-        ax.quiver(0, 0, 0, 0, 1, 0, color='g', label='Y axis')
-        ax.quiver(0, 0, 0, 0, 0, 1, color='b', label='Z axis')
-        
-        # Set labels and title
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.set_title('Point Cloud and Mesh Alignment')
-        
-        # Add legend
-        handles, labels_text = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels_text, handles))
-        ax.legend(by_label.values(), by_label.keys(), loc='upper right')
-        
-        # Set equal aspect ratio
-        max_range = np.array([
-            ax.get_xlim()[1] - ax.get_xlim()[0],
-            ax.get_ylim()[1] - ax.get_ylim()[0],
-            ax.get_zlim()[1] - ax.get_zlim()[0]
-        ]).max() / 2.0
-        
-        mid_x = (ax.get_xlim()[1] + ax.get_xlim()[0]) * 0.5
-        mid_y = (ax.get_ylim()[1] + ax.get_ylim()[0]) * 0.5
-        mid_z = (ax.get_zlim()[1] + ax.get_zlim()[0]) * 0.5
-        
-        ax.set_xlim(mid_x - max_range, mid_x + max_range)
-        ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        ax.set_zlim(mid_z - max_range, mid_z + max_range)
-        
-        plt.tight_layout()
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Matplotlib visualization saved to: {output_path}")
-        return
-        
-    except Exception as e:
-        print(f"Matplotlib visualization failed: {e}")
-        print("Falling back to Open3D...")
+    print("Visualizing with matplotlib...")
     
-    # Try Open3D as a fallback, with better error handling
-    try:
-        import open3d as o3d
-        
-        # Create colored point cloud
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        
-        # Create a simple color map for labels
-        unique_labels = np.unique(labels)
-        label_to_color = {}
-        colors = [
-            [1, 0, 0],  # Red
-            [0, 1, 0],  # Green
-            [0, 0, 1],  # Blue
-            [1, 1, 0],  # Yellow
-            [1, 0, 1],  # Magenta
-            [0, 1, 1],  # Cyan
-        ]
-        
-        for i, label in enumerate(unique_labels):
-            label_to_color[label] = colors[i % len(colors)]
-        
-        # Assign colors to points
-        point_colors = np.zeros((len(points), 3))
-        for i, label in enumerate(labels):
-            point_colors[i] = label_to_color[label]
-        
-        # Add alpha/transparency to point cloud colors (not supported directly in Open3D)
-        # We'll make the colors less saturated as an approximation
-        point_colors = point_colors * 0.7 + 0.3  # Reduce saturation
-        
-        pcd.colors = o3d.utility.Vector3dVector(point_colors)
-        
-        # Create mesh with better visibility
-        o3d_mesh = o3d.geometry.TriangleMesh()
-        mesh_vertices = np.array(mesh.vertices)
-        
-        # Flip mesh Z coordinate if needed
-        # if flip_mesh_z:
-        #     mesh_vertices[:, 2] = -mesh_vertices[:, 2]
-        #     mesh_vertices[:, 1] = -mesh_vertices[:, 1]
+    fig = plt.figure(figsize=(14, 12))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Create a color map for the unique labels
+    unique_labels = np.unique(labels)
+    colors = plt.cm.tab10.colors
+    
+    # Plot mesh first so it's in the background
+    mesh_vertices = np.array(mesh.vertices)
+    
+    # This flip_mesh_z part is from your original code and should be False in main() call.
+    # If it was active, it would apply an additional (and likely incorrect) flip.
+    # if flip_mesh_z:
+    # mesh_vertices[:, 2] = mesh_vertices[:, 2] + 0.5
+    #     mesh_vertices[:, 1] = -mesh_vertices[:, 1]
 
-        # Rotation matrix for 180 degrees around Z
-        # rot_z_180 = np.array([
-        #     [-1, 0, 0],
-        #     [0, -1, 0],
-        #     [0, 0, 1]
-        # ])
-        # mesh_vertices = np.dot(mesh_vertices, rot_z_180.T)
-            
-        o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh_vertices)
-        o3d_mesh.triangles = o3d.utility.Vector3iVector(np.array(mesh.faces))
-        o3d_mesh.compute_vertex_normals()
-        
-        # Make mesh more prominent with darker gray
-        o3d_mesh.paint_uniform_color([0.3, 0.3, 0.3])  # Darker gray for better contrast
-        
-        # Create coordinate frame
-        coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
-            size=1.0, origin=[0, 0, 0]
-        )
-        
-        # Try non-interactive rendering (for headless systems)
-        print("Attempting to render with Open3D offscreen renderer...")
-        vis = o3d.visualization.Visualizer()
-        try:
-            vis.create_window(visible=False)
-            vis.add_geometry(o3d_mesh)  # Add mesh first (background)
-            vis.add_geometry(pcd)       # Then points (foreground)
-            vis.add_geometry(coord_frame)
-            
-            # Set render options
-            render_option = vis.get_render_option()
-            render_option.mesh_show_wireframe = True
-            render_option.line_width = 2.0  # Thicker wireframe
-            render_option.point_size = 2.0
-            render_option.mesh_shade_option = o3d.visualization.MeshShadeOption.Flat
-            
-            # Set camera parameters for a good view
-            ctr = vis.get_view_control()
-            ctr.set_zoom(0.8)
-            
-            # Update and capture
-            vis.poll_events()
-            vis.update_renderer()
-            vis.capture_screen_image(output_path)
-            vis.destroy_window()
-            
-            print(f"Open3D non-interactive visualization saved to: {output_path}")
-            
-        except Exception as e:
-            print(f"Open3D non-interactive visualization failed: {e}")
-            vis.destroy_window()
-            
-            # If non-interactive fails, try to save the geometries directly
-            print("Trying to save geometries directly...")
-            o3d.io.write_point_cloud(output_path.replace(".png", "_points.ply"), pcd)
-            o3d.io.write_triangle_mesh(output_path.replace(".png", "_mesh.ply"), o3d_mesh)
-            
-            print(f"Saved point cloud to: {output_path.replace('.png', '_points.ply')}")
-            print(f"Saved mesh to: {output_path.replace('.png', '_mesh.ply')}")
-            
-    except Exception as e:
-        print(f"All visualization methods failed: {e}")
-        
-        # As a last resort, save the raw data
-        np.savez(output_path.replace(".png", "_data.npz"), 
-                points=points, labels=labels, 
-                mesh_vertices=mesh.vertices, mesh_faces=mesh.faces)
-        
-        print(f"Saved raw point cloud and mesh data to: {output_path.replace('.png', '_data.npz')}")
+    # Plot mesh vertices with higher visibility
+    ax.scatter(
+        mesh_vertices[:, 0], mesh_vertices[:, 1], mesh_vertices[:, 2],
+        c='black', marker='.', s=2, alpha=0.5, label='Mesh Vertices'
+    )
+    
+    # Plot mesh wireframe for better visibility
+    # This is computationally expensive for large meshes, so limit the faces
+    mesh_faces = np.array(mesh.faces)
+    max_faces_for_wireframe = min(5000, len(mesh_faces))
+    if len(mesh_faces) > max_faces_for_wireframe:
+        step = len(mesh_faces) // max_faces_for_wireframe
+        mesh_faces = mesh_faces[::step]
+    
+    for face in mesh_faces:
+        vertices = mesh_vertices[face]
+        # Draw each edge of the triangle
+        for i in range(3):
+            ax.plot3D(
+                [vertices[i, 0], vertices[(i+1)%3, 0]],
+                [vertices[i, 1], vertices[(i+1)%3, 1]],
+                [vertices[i, 2], vertices[(i+1)%3, 2]],
+                color='gray', linewidth=0.5, alpha=0.3
+            )
+    
+    # Plot the point cloud with colors by label (more transparent)
+    for i, label in enumerate(unique_labels):
+        mask = labels == label
+        if np.any(mask):
+            # Fixed: Remove the list wrapper around the color
+            color = colors[i % len(colors)]
+            ax.scatter(
+                points[mask, 0], points[mask, 1], points[mask, 2],
+                color=color,  # Changed from c=[colors[i % len(colors)]]
+                marker='.', s=1, alpha=0.3, label=f'Label {label}'
+            )
+    
+    # Add coordinate axes (Blender World reference)
+    ax.quiver(0, 0, 0, 1, 0, 0, color='r', length=0.2, arrow_length_ratio=0.3, label='X axis')
+    ax.quiver(0, 0, 0, 0, 1, 0, color='g', length=0.2, arrow_length_ratio=0.3, label='Y axis')
+    ax.quiver(0, 0, 0, 0, 0, 1, color='b', length=0.2, arrow_length_ratio=0.3, label='Z axis')
+    
+    # Set labels and title
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.set_title('Point Cloud and Mesh Alignment')
+    
+    # Add legend
+    handles, labels_text = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels_text, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='upper right')
+    
+    # Set equal aspect ratio
+    max_range = np.array([
+        ax.get_xlim()[1] - ax.get_xlim()[0],
+        ax.get_ylim()[1] - ax.get_ylim()[0],
+        ax.get_zlim()[1] - ax.get_zlim()[0]
+    ]).max() / 2.0
+    
+    mid_x = (ax.get_xlim()[1] + ax.get_xlim()[0]) * 0.5
+    mid_y = (ax.get_ylim()[1] + ax.get_ylim()[0]) * 0.5
+    mid_z = (ax.get_zlim()[1] + ax.get_zlim()[0]) * 0.5
+    
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Matplotlib visualization saved to: {output_path}")
 
 
 def merge_point_clouds_by_label(point_clouds, point_labels, unique_labels, align_clouds=True):
@@ -3342,7 +3802,71 @@ def simple_icp(source_cloud, target_cloud, max_correspondence_dist=100.0, max_it
     aligned_cloud.transform(transformation_matrix)
     return aligned_cloud, transformation_matrix
 
-def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
+def _align_mesh_to_point_cloud_icp_only(mesh_to_align, points_to_align_to, max_correspondence_dist=0.05):
+    """
+    Internal helper: Align a mesh to a point cloud using ICP and scaling.
+    Assumes rough initial alignment.
+    Returns the transformed mesh (target), transformed points (source), and the combined transformation matrix applied to points.
+    """
+    
+    # Sample points from mesh and points_3d for ICP to speed up
+    num_samples = min(10000, len(points_to_align_to), len(mesh_to_align.vertices))
+    
+    if len(points_to_align_to) > num_samples:
+        indices = np.random.choice(len(points_to_align_to), num_samples, replace=False)
+        sampled_source_points = points_to_align_to[indices]
+    else:
+        sampled_source_points = points_to_align_to
+
+    if len(mesh_to_align.vertices) > num_samples:
+        aligned_mesh_points = mesh_to_align.sample(num_samples)
+    else:
+        aligned_mesh_points = mesh_to_align.vertices
+
+    print(f"  ICP: Using {len(sampled_source_points)} points from source and {len(aligned_mesh_points)} from target mesh for alignment.")
+
+    # Scale source (points_to_align_to) to match target (mesh) diameter
+    # `scale_target_to_source` scales the *second* argument to match the *first*.
+    # So to scale `sampled_source_points` to `aligned_mesh_points`:
+    scaled_source_points, scale_factor_points = scale_target_to_source(aligned_mesh_points, sampled_source_points)
+    print(f"  Scaled point cloud by factor: {scale_factor_points:.4f}")
+    
+    # Convert to Open3D point clouds for ICP
+    source_o3d = o3d.geometry.PointCloud()
+    source_o3d.points = o3d.utility.Vector3dVector(scaled_source_points)
+    
+    target_o3d = o3d.geometry.PointCloud()
+    target_o3d.points = o3d.utility.Vector3dVector(aligned_mesh_points)
+    
+    # Estimate normals for point-to-plane ICP (required for good results)
+    source_o3d.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
+    target_o3d.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
+
+    # Perform ICP registration
+    result_icp = o3d.pipelines.registration.registration_icp(
+        source_o3d,
+        target_o3d,
+        max_correspondence_dist,
+        np.identity(4), # Initial guess (assuming rough prior alignment)
+        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=500)
+    )
+    
+    icp_transformation_matrix = result_icp.transformation
+    print(f"  ICP Fitness: {result_icp.fitness:.4f}, RMSE: {result_icp.inlier_rmse:.4f}")
+
+    # Apply combined transformation to the original full point cloud
+    # 1. Scale the points_to_align_to
+    # 2. Apply the ICP transformation matrix to the scaled points
+    transformed_points = points_to_align_to * scale_factor_points
+    transformed_points_homogeneous = np.hstack([transformed_points, np.ones((len(transformed_points), 1))])
+    transformed_points = (transformed_points_homogeneous @ icp_transformation_matrix.T)[:, :3]
+
+    # The mesh (`mesh_to_align`) itself is the target, so it is not transformed by this ICP call.
+    # We return it as is, and the transformed points.
+    return mesh_to_align, transformed_points, np.eye(4)
+
+def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None, mirror_y=False):
     """
     Align mesh to point cloud using a fixed manual transformation.
     
@@ -3362,6 +3886,18 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
     
     # Apply a fixed transformation that works for your specific case
     # This is a combination of flips, rotations, and possibly scaling/translation
+
+    # Apply Y-axis mirroring if requested
+    if mirror_y:
+        # Create a transformation matrix that flips the Y coordinate
+        mirror_matrix = np.array([
+            [1, 0, 0, 0],
+            [0, -1, 0, 0],  # Negate Y coordinate
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+        aligned_mesh.apply_transform(mirror_matrix)
+        print("Applied Y-axis mirroring to mesh")
     
     # Example transformation - adjust these values based on your specific needs
     # 1. Flip Z axis
@@ -3394,11 +3930,14 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
     aligned_mesh.apply_transform(rotation_x)
 
     # Combine the initial transformations for later inversion
-    initial_transform = np.matmul(rotation_x, np.matmul(rot_y_180, flip_z))
+    if mirror_y:
+        initial_transform = np.matmul(rotation_x, np.matmul(rot_y_180, np.matmul(flip_z, mirror_matrix)))
+    else:
+        initial_transform = np.matmul(rotation_x, np.matmul(rot_y_180, flip_z))
 
     # Refine alignment with scaling and icp
     # use 10000 sampled points for scaling
-    if len(points > 10000):
+    if len(points) > 10000:
         indices = np.random.choice(len(points), 10000, replace=False)
         sampled_source_points = points[indices]
     else:
@@ -3418,7 +3957,7 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
     scaling_matrix[1, 1] = scale_factor
     scaling_matrix[2, 2] = scale_factor
 
-    if len(points > 10000):
+    if len(points) > 10000:
         # use a larger amount of points for icp alignment
         # indices = np.random.choice(len(points), 50000, replace=False)
         # sampled_source_points = points[indices]
@@ -3529,14 +4068,24 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None):
     return aligned_mesh, points, inverse_transform
 
 
-def main(OBJECT, flip_z=True):
+def main(OBJECT, flip_z=False):
     # Define paths
     data_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/output_views/{OBJECT}"
     render_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/output_views/{OBJECT}"
     output_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/segmentation_masks/{OBJECT}"
+
+    # If already ran, skip repeated execution
+    import glob
+    matching_files = glob.glob(f"{output_dir}/output/{OBJECT}_*.obj")
+    if matching_files:
+        print(f"Segmented meshes already exist for object {args.object}, skipping...")
+        return None
     
     # Create output directory if needed
     os.makedirs(output_dir, exist_ok=True)
+
+    # if 'partnet' in OBJECT:
+    #     OBJECT = '_'.join(OBJECT.split('_')[1:-1])
     
     # Load RGB images
     rgb_images = sorted([os.path.join(render_dir, f) for f in os.listdir(render_dir) 
@@ -3553,18 +4102,29 @@ def main(OBJECT, flip_z=True):
         camera_params.append({
             'K': data['K'],
             'R': data['R'],
-            't': data['t']
+            't': data['t'],
+            'view_dir': data['view_dir'],
+            'right': data['right'],
+            'up': data['up']
         })
     
     # Debug camera positions
     print("\nCamera positions:")
     for i, params in enumerate(camera_params):
         print(f"Camera {i}: {params['t']}")
+
+    # # Debug camera intrinsics
+    # print("\nCamera intrinsics:")
+    # for i, params in enumerate(camera_params):
+    #     print(f"Camera {i}: {params['K']}")
     
     # Load depth maps
     depth_files = sorted([os.path.join(render_dir, f) for f in os.listdir(render_dir) 
-                         if f.startswith(f"depth_{OBJECT}") and f.endswith(".exr")])
-    
+                         if f.startswith("depth_") and f.endswith(".exr")])
+    # if 'multi_view' not in OBJECT:
+    #     depth_files = sorted([os.path.join(render_dir, f) for f in os.listdir(render_dir) 
+    #                      if f.startswith(f"depth_{OBJECT}_multi-view") and f.endswith(".exr")])
+        
     # Load depth maps
     depth_maps = []
     for f in depth_files:
@@ -3581,8 +4141,26 @@ def main(OBJECT, flip_z=True):
     print(f"Found {len(depth_files)} depth files")
     print(f"Found {len(results_paths)} segmentation result files")
     
+    # Extract indices from segmentation result filenames
+    seg_indices = [int(os.path.basename(path).split(f'{OBJECT}_')[1].split('_')[0]) for path in results_paths]
+    # if "multi_view" in results_paths[0]:
+    #     seg_indices = [int(os.path.basename(path).split('view_')[1].split('_')[0]) for path in results_paths]
+    # elif "real" in results_paths[0]:
+    #     seg_indices = [int(os.path.basename(path).split('real_')[1].split('_')[0]) for path in results_paths]
+
     if not (len(rgb_images) == len(camera_param_files) == len(depth_files) == len(results_paths)):
-        print("Warning: Mismatched number of files. The script may not work correctly.")
+        # print("Warning: Mismatched number of files. The script may not work correctly.")
+
+        # Filter other lists to only include files with matching indices
+        rgb_images = [img for i, img in enumerate(rgb_images) if i in seg_indices]
+        camera_param_files = [params for i, params in enumerate(camera_param_files) if i in seg_indices]
+        camera_params = [p for i,p in enumerate(camera_params) if i in seg_indices]
+        depth_maps = [depth for i, depth in enumerate(depth_maps) if i in seg_indices]
+
+        # Print results
+        print(f"\nAfter filtering:")
+        print(f"Available indices: {seg_indices}")
+        print(f"Found {len(rgb_images)} images with segmentation results")
 
     # update output_dir to new folder
     output_dir = os.path.join(output_dir, 'output')
@@ -3612,12 +4190,24 @@ def main(OBJECT, flip_z=True):
     print(f"\nLoaded mesh with {len(mesh.vertices)} vertices and {len(mesh.faces)} faces")
     
     # Align mesh to point cloud
-    aligned_mesh, points_3d, inverse_transform = align_mesh_to_point_cloud(
-        mesh, 
-        points_3d, 
-        visualize=True, 
-        output_path=os.path.join(output_dir, "mesh_alignment.png")
-    )
+    # aligned_mesh, points_3d, inverse_transform = align_mesh_to_point_cloud(
+    #     mesh, 
+    #     points_3d, 
+    #     visualize=True, 
+    #     output_path=os.path.join(output_dir, "mesh_alignment.png"),
+    #     mirror_y=False
+    # )
+    # aligned_mesh, points_3d, inverse_transform = _align_mesh_to_point_cloud_icp_only(
+    #     mesh, 
+    #     points_3d
+    # )
+    aligned_mesh = mesh.copy()
+    z_up = np.array([[ 1,  0,  0,  0 ],
+                    [ 0,  0, -1,  0 ],
+                    [ 0,  1,  0,  0 ], # 0,1,0,0.4
+                    [ 0,  0,  0,  1 ]])
+    aligned_mesh.apply_transform(z_up)
+    inverse_transform = np.eye(4)
     
     # Visualize point cloud with aligned mesh
     visualization_path = os.path.join(output_dir, "point_cloud_with_mesh.png")
@@ -3708,15 +4298,16 @@ def main(OBJECT, flip_z=True):
         # Visualize merged point cloud
         vis_path = os.path.join(output_dir, 'merged_point_cloud.png')
         
-        # Prepare camera parameters for visualization
         all_camera_params = []
-        for params in camera_params:
-            if flip_z:
-                t_vis = params['t'].copy()
-                t_vis[2] = -t_vis[2]
-                all_camera_params.append({'R': params['R'], 't': t_vis})
-            else:
-                all_camera_params.append({'R': params['R'], 't': params['t']})
+        for idx in seg_indices:
+            if idx < len(camera_params):
+                params = camera_params[idx]
+                if flip_z:
+                    t_vis = params['t'].copy()
+                    t_vis[2] = -t_vis[2]
+                    all_camera_params.append({'R': params['R'], 't': t_vis})
+                else:
+                    all_camera_params.append({'R': params['R'], 't': params['t']})
                 
         visualize_point_cloud_with_cameras(
             merged_points, merged_instance_ids, all_camera_params,
