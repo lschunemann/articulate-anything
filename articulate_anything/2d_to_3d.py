@@ -4156,6 +4156,148 @@ def align_mesh_to_point_cloud(mesh, points, visualize=True, output_path=None, mi
     
     return aligned_mesh, points, inverse_transform
 
+def make_3d_point_clouds_mutually_exclusive(point_clouds_by_instance, instance_ids, point_labels, distance_threshold=0.02):
+    """
+    Make 3D point clouds mutually exclusive by removing overlapping points from larger clouds.
+    Smaller point clouds get priority over larger ones.
+    
+    Args:
+        point_clouds_by_instance: Dictionary mapping instance IDs to point clouds
+        instance_ids: Array of instance IDs  
+        point_labels: Dictionary mapping instance IDs to their base labels
+        distance_threshold: Distance threshold for considering points as overlapping
+        
+    Returns:
+        Updated point_clouds_by_instance with overlaps removed
+    """
+    from scipy.spatial import cKDTree
+    import numpy as np
+    
+    print("Making 3D point clouds mutually exclusive...")
+    
+    # Group instances by their base label first
+    instances_by_label = {}
+    for instance_id in point_clouds_by_instance.keys():
+        if instance_id in point_labels:
+            base_label = point_labels[instance_id]
+            if base_label not in instances_by_label:
+                instances_by_label[base_label] = []
+            instances_by_label[base_label].append(instance_id)
+    
+    # Create a copy of the point clouds to modify
+    updated_point_clouds = {k: v.copy() for k, v in point_clouds_by_instance.items()}
+    
+    # First pass: resolve conflicts within each label group
+    for base_label, label_instances in instances_by_label.items():
+        if len(label_instances) <= 1:
+            continue  # No conflicts within this label
+            
+        print(f"  Processing label '{base_label}' with {len(label_instances)} instances")
+        
+        # Calculate sizes and sort by size (smallest first)
+        instance_sizes = []
+        for instance_id in label_instances:
+            if instance_id in updated_point_clouds:
+                size = len(updated_point_clouds[instance_id])
+                instance_sizes.append((instance_id, size))
+        
+        # Sort by size (smallest first gets highest priority)
+        instance_sizes.sort(key=lambda x: x[1])
+        
+        print(f"    Instance sizes: {[(iid, size) for iid, size in instance_sizes]}")
+        
+        # Track points that have been claimed by higher priority instances
+        claimed_trees = []
+        
+        # Process instances in order of priority (smallest first)
+        for i, (instance_id, original_size) in enumerate(instance_sizes):
+            current_points = updated_point_clouds[instance_id]
+            
+            if len(current_points) == 0:
+                continue
+                
+            # Check against all previously processed (higher priority) instances
+            points_to_remove = set()
+            
+            for claimed_tree in claimed_trees:
+                # Find points in current cloud that are too close to claimed points
+                distances, _ = claimed_tree.query(current_points, distance_upper_bound=distance_threshold)
+                
+                # Mark points for removal if they're within threshold
+                close_indices = np.where(np.isfinite(distances))[0]
+                points_to_remove.update(close_indices)
+            
+            # Remove overlapping points
+            if points_to_remove:
+                keep_indices = np.setdiff1d(np.arange(len(current_points)), list(points_to_remove))
+                updated_point_clouds[instance_id] = current_points[keep_indices]
+                
+                removed_count = len(points_to_remove)
+                final_size = len(keep_indices)
+                print(f"    Instance {instance_id}: kept {final_size} points, removed {removed_count} overlapping points")
+            else:
+                print(f"    Instance {instance_id}: kept all {len(current_points)} points (no overlaps)")
+            
+            # Add current points to claimed points for future comparisons
+            final_points = updated_point_clouds[instance_id]
+            if len(final_points) > 0:
+                claimed_trees.append(cKDTree(final_points))
+    
+    # Second pass: handle conflicts between different labels (prioritize smaller instances globally)
+    print("  Checking for conflicts between different labels...")
+    
+    # Get all instances sorted by size globally
+    all_instances = []
+    for instance_id, points in updated_point_clouds.items():
+        if len(points) > 0:
+            base_label = point_labels.get(instance_id, "unknown")
+            all_instances.append((instance_id, len(points), points, base_label))
+    
+    # Sort by size (smallest first)
+    all_instances.sort(key=lambda x: x[1])
+    
+    # Track globally claimed points
+    global_claimed_trees = []
+    
+    for i, (instance_id, size, points, base_label) in enumerate(all_instances):
+        if len(points) == 0:
+            continue
+            
+        # Check against all previously processed instances (regardless of label)
+        points_to_remove = set()
+        
+        for claimed_tree in global_claimed_trees:
+            distances, _ = claimed_tree.query(points, distance_upper_bound=distance_threshold)
+            close_indices = np.where(np.isfinite(distances))[0]
+            points_to_remove.update(close_indices)
+        
+        # Remove overlapping points
+        if points_to_remove:
+            keep_indices = np.setdiff1d(np.arange(len(points)), list(points_to_remove))
+            updated_point_clouds[instance_id] = points[keep_indices]
+            
+            removed_count = len(points_to_remove)
+            final_size = len(keep_indices)
+            if removed_count > 0:
+                print(f"    Cross-label: Instance {instance_id} ({base_label}): kept {final_size} points, removed {removed_count} overlapping points")
+        
+        # Add to globally claimed points
+        final_points = updated_point_clouds[instance_id]
+        if len(final_points) > 0:
+            global_claimed_trees.append(cKDTree(final_points))
+    
+    # Filter out instances that became empty
+    original_count = len(updated_point_clouds)
+    updated_point_clouds = {k: v for k, v in updated_point_clouds.items() if len(v) > 0}
+    final_count = len(updated_point_clouds)
+    
+    if final_count < original_count:
+        print(f"  Removed {original_count - final_count} instances that became empty after overlap removal")
+    
+    print(f"  Result: {final_count} non-empty mutually exclusive 3D point clouds")
+    
+    return updated_point_clouds
+
 
 def main(OBJECT, flip_z=False):
     # Define paths
@@ -4164,7 +4306,7 @@ def main(OBJECT, flip_z=False):
     output_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/segmentation_masks/{OBJECT}"
 
     overwrite = True  # Set to True to force reprocessing
-    
+
     # If already ran, skip repeated execution
     import glob
     matching_files = glob.glob(f"{output_dir}/output/{OBJECT}_*.obj")
@@ -4334,49 +4476,58 @@ def main(OBJECT, flip_z=False):
         instance_id = instance_ids[idx]
         instance_label = labels[idx]
         instance_to_label[instance_id] = instance_label
-        
-
-    print("\nMerging similar instances across views with two-pass approach")
-    instance_mapping, clusters = merge_instances_with_two_pass_approach(aligned_mesh, point_clouds_by_instance, np.unique(instance_ids),point_labels=instance_to_label, min_clusters=len(np.unique(labels)))
     
-    # Create merged point clouds
-    print("\nCreating merged point clouds for unique parts...")
-    merged_points_all = []
-    merged_labels_all = []
-    merged_instance_ids_all = []
+
+    # First merge similar instances (same semantic meaning across views)
+    print("\nMerging similar instances across views with two-pass approach")
+    instance_mapping, clusters = merge_instances_with_two_pass_approach(
+        aligned_mesh, point_clouds_by_instance, np.unique(instance_ids), 
+        point_labels=instance_to_label, min_clusters=len(np.unique(labels))
+    )
+    
+    # Create merged point clouds from clusters
+    print("\nCreating merged point clouds from clusters...")
+    merged_point_clouds_by_cluster = {}
+    cluster_to_label = {}
     
     for cluster_idx, cluster_instances in enumerate(clusters):
+        if not cluster_instances:  # Skip empty clusters
+            continue
+            
         representative_id = cluster_instances[0]
         
         # Combine all points from this cluster
         cluster_points = []
-        cluster_labels = []
-        
         for instance_id in cluster_instances:
-            mask = instance_ids == instance_id
-            cluster_points.append(points_3d[mask])
-            # Get the label for this instance (should be the same for all points in the instance)
-            if np.any(mask):
-                instance_label = labels[np.where(mask)[0][0]]
-                cluster_labels.extend([instance_label] * np.sum(mask))
+            if instance_id in point_clouds_by_instance:
+                cluster_points.append(point_clouds_by_instance[instance_id])
         
-        # Stack all points
         if cluster_points:
             combined_points = np.vstack(cluster_points)
-            
-            # # Optionally downsample if there are too many points
-            # if len(combined_points) > 10000:
-            #     # Keep track of indices before downsampling
-            #     indices = np.random.choice(len(combined_points), 10000, replace=False)
-            #     combined_points = combined_points[indices]
-            #     cluster_labels = [cluster_labels[i] for i in indices]
-            
-            # Add to merged collections
-            merged_points_all.append(combined_points)
-            merged_labels_all.extend(cluster_labels)
-            merged_instance_ids_all.extend([representative_id] * len(combined_points))
-            
-            print(f"  Cluster {cluster_idx} (representative: {representative_id}): {len(combined_points)} points")
+            merged_point_clouds_by_cluster[representative_id] = combined_points
+            cluster_to_label[representative_id] = instance_to_label[representative_id]
+            print(f"  Cluster {cluster_idx} (rep: {representative_id}): {len(combined_points)} points")
+    
+    # Make 3D point clouds mutually exclusive
+    print("\nRemoving overlapping points between merged semantic parts...")
+    merged_point_clouds_by_cluster = make_3d_point_clouds_mutually_exclusive(
+        merged_point_clouds_by_cluster, 
+        list(merged_point_clouds_by_cluster.keys()), 
+        cluster_to_label,
+        distance_threshold=0.02  # Adjust based on your data scale
+    )
+    
+    # Update the main point arrays to reflect the cleaned point clouds
+    merged_points_all = []
+    merged_labels_all = []
+    merged_instance_ids_all = []
+    
+    for representative_id, points in merged_point_clouds_by_cluster.items():
+        if len(points) > 0:
+            merged_points_all.append(points)
+            cluster_label = cluster_to_label[representative_id]
+            merged_labels_all.extend([cluster_label] * len(points))
+            merged_instance_ids_all.extend([representative_id] * len(points))
     
     # Stack all merged points
     if merged_points_all:
