@@ -561,8 +561,85 @@ def lift_2d_masks_to_3d(rgb_images, results_paths, depth_maps, camera_params, OB
     
     return points_3d, labels, instance_ids  # Return instance IDs as well
 
+# Add this new function after your existing functions
+def make_masks_mutually_exclusive(masks, labels):
+    """
+    Make masks mutually exclusive by removing overlapping areas from larger masks.
+    Smaller masks get priority over larger masks.
+    
+    Args:
+        masks: List of binary masks (each a 2D numpy array)
+        labels: List of corresponding label names
+    
+    Returns:
+        List of modified masks that are mutually exclusive
+    """
+    if len(masks) <= 1:
+        return masks, labels
+    
+    print(f"    Making {len(masks)} masks mutually exclusive...")
+    
+    # Convert all masks to boolean arrays to ensure consistent data types
+    bool_masks = []
+    for i, mask in enumerate(masks):
+        if mask.dtype != bool:
+            # Convert to boolean - handle both 0/1 and 0/255 cases
+            bool_mask = mask > 0
+        else:
+            bool_mask = mask.copy()
+        bool_masks.append(bool_mask)
+    
+    # Calculate mask sizes (number of True pixels)
+    mask_sizes = [np.sum(mask) for mask in bool_masks]
+    
+    # Print original mask sizes
+    for i, (label, size) in enumerate(zip(labels, mask_sizes)):
+        print(f"      Original mask '{label}': {size} pixels")
+    
+    # Sort by size (smallest first gets highest priority)
+    sorted_indices = np.argsort(mask_sizes)
+    
+    # Create copies of masks to modify
+    exclusive_masks = [mask.copy() for mask in bool_masks]
+    
+    # Keep track of pixels that have been claimed by higher priority masks
+    claimed_pixels = np.zeros_like(bool_masks[0], dtype=bool)
+    
+    # Process masks in order of priority (smallest first)
+    for idx in sorted_indices:
+        current_mask = exclusive_masks[idx]
+        original_size = np.sum(current_mask)
+        
+        # Remove already claimed pixels from current mask
+        exclusive_masks[idx] = current_mask & ~claimed_pixels
+        final_size = np.sum(exclusive_masks[idx])
+        
+        # Add current mask pixels to claimed pixels
+        claimed_pixels |= exclusive_masks[idx]
+        
+        removed_pixels = original_size - final_size
+        if removed_pixels > 0:
+            print(f"      Mask '{labels[idx]}': kept {final_size} pixels, removed {removed_pixels} overlapping pixels")
+        else:
+            print(f"      Mask '{labels[idx]}': kept all {final_size} pixels (no overlaps)")
+    
+    # Filter out masks that became empty
+    filtered_masks = []
+    filtered_labels = []
+    
+    for i, mask in enumerate(exclusive_masks):
+        if np.sum(mask) > 0:  # Keep only non-empty masks
+            # Convert back to the original mask format (0/1 as uint8)
+            filtered_masks.append(mask.astype(np.uint8))
+            filtered_labels.append(labels[i])
+        else:
+            print(f"      Removed empty mask '{labels[i]}' after overlap resolution")
+    
+    print(f"    Result: {len(filtered_masks)} non-empty mutually exclusive masks")
+    return filtered_masks, filtered_labels
+
 def load_masks_from_results(results_path, OBJECT, view):
-    """Load masks from the JSON results file with better error handling"""
+    """Load masks from the JSON results file with better error handling and overlap resolution"""
     print(f"Loading masks from {results_path}")
     
     try:
@@ -599,7 +676,6 @@ def load_masks_from_results(results_path, OBJECT, view):
                 cv2.imwrite(mask_vis_path, mask * 255)
                 print(f"  Saved mask visualization to {mask_vis_path}")
                 
-                
                 masks.append(mask)
                 labels.append(annotation['class_name'])
             except Exception as e:
@@ -609,9 +685,22 @@ def load_masks_from_results(results_path, OBJECT, view):
         if not masks:
             print(f"No valid masks could be decoded from results")
             return np.array([]), []
-            
+        
         print(f"Loaded {len(masks)} masks with labels: {labels}")
-        return np.stack(masks), labels
+        
+        # Make masks mutually exclusive (remove overlaps)
+        if len(masks) > 1:
+            exclusive_masks, exclusive_labels = make_masks_mutually_exclusive(masks, labels)
+            
+            # Save visualizations of the exclusive masks for debugging
+            for i, (mask, label) in enumerate(zip(exclusive_masks, exclusive_labels)):
+                exclusive_mask_vis_path = f"{'/'.join(results_path.split('/')[:-1])}/exclusive_mask_{label}_view_{view}.png"
+                cv2.imwrite(exclusive_mask_vis_path, mask * 255)
+                print(f"  Saved exclusive mask visualization to {exclusive_mask_vis_path}")
+            
+            return np.stack(exclusive_masks), exclusive_labels
+        else:
+            return np.stack(masks), labels
         
     except Exception as e:
         print(f"Error loading masks from {results_path}: {str(e)}")
@@ -4074,10 +4163,12 @@ def main(OBJECT, flip_z=False):
     render_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/output_views/{OBJECT}"
     output_dir = f"/home/link/DreMa/third_party/articulate-anything/datasets/segmentation_masks/{OBJECT}"
 
+    overwrite = True  # Set to True to force reprocessing
+    
     # If already ran, skip repeated execution
     import glob
     matching_files = glob.glob(f"{output_dir}/output/{OBJECT}_*.obj")
-    if matching_files:
+    if (not overwrite) and matching_files:
         print(f"Segmented meshes already exist for object {args.object}, skipping...")
         return None
     
