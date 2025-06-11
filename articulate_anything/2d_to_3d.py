@@ -1739,15 +1739,18 @@ def enforce_structural_constraints(mesh, vertex_labels, part_structures):
 
 def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_labels, max_distance=0.05):
     """
-    Optimized version of structure-aware mesh segmentation.
-    Fixed to work with pre-computed vertex neighbors.
+    Optimized version of structure-aware mesh segmentation with 'base' part support.
+    Vertices beyond max_distance from any segmented points are assigned to 'base' label.
     """
     import numpy as np
     import networkx as nx
     from scipy.spatial import cKDTree
     from collections import Counter
     
-    print("Performing optimized structure-aware mesh segmentation...")
+    print("Performing optimized structure-aware mesh segmentation with base part...")
+    
+    # Add 'base' to the unique labels
+    unique_labels_with_base = list(unique_labels) + ['base']
     
     # Step 1: Calculate simplified mesh features (just normals and basic curvature)
     print("  Computing basic geometric features...")
@@ -1784,96 +1787,70 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
     kdtree = cKDTree(segmented_points)
     distances, indices = kdtree.query(mesh.vertices, k=1)
     
-    # Get initial assignments for vertices close enough to point cloud
+    # Initialize all vertices as unlabeled
     vertex_labels = np.full(len(mesh.vertices), "", dtype=object)
     confidence = np.zeros(len(mesh.vertices))
     
+    # Simple binary assignment based on max_distance
     close_enough = distances < max_distance
+    too_far = distances >= max_distance
+    
+    # Assign labels to close vertices
     vertex_labels[close_enough] = [point_labels[idx] for idx in indices[close_enough]]
     confidence[close_enough] = 1.0 - (distances[close_enough] / max_distance)
     
-    print(f"    Initial assignment: {np.sum(close_enough)} vertices assigned directly")
+    # Assign 'base' label to all vertices beyond max_distance
+    vertex_labels[too_far] = 'base'
+    confidence[too_far] = 0.9  # High confidence for base assignment
     
-    # Step 4: Fast label propagation with structural guidance
-    print("  Propagating labels...")
+    print(f"    Initial assignment: {np.sum(close_enough)} vertices assigned to segmented labels")
+    print(f"    Base assignment: {np.sum(too_far)} vertices assigned to 'base'")
+    
+    # Step 4: Label propagation for any remaining unlabeled vertices (shouldn't be any, but just in case)
     unlabeled = np.where(vertex_labels == "")[0]
-    iterations = 0
-    max_iterations = 20  # Limit iterations
-    
-    while len(unlabeled) > 0 and iterations < max_iterations:
-        print(f"    Iteration {iterations+1}: {len(unlabeled)} unlabeled vertices")
-        newly_labeled = []
+    if len(unlabeled) > 0:
+        print(f"  Propagating labels for {len(unlabeled)} unlabeled vertices...")
         
         for vertex_idx in unlabeled:
             # Get labels of neighbors
-            neighbor_labels = [
-                vertex_labels[n] for n in mesh.vertex_neighbors_list[vertex_idx]
-                if vertex_labels[n] != ""
-            ]
+            neighbor_labels = []
+            base_neighbors = 0
             
-            if neighbor_labels:
-                # Use most common neighbor label
+            for n in mesh.vertex_neighbors_list[vertex_idx]:
+                neighbor_label = vertex_labels[n]
+                if neighbor_label == "base":
+                    base_neighbors += 1
+                elif neighbor_label != "":
+                    neighbor_labels.append(neighbor_label)
+            
+            # If majority of neighbors are 'base', assign to 'base'
+            total_neighbors = len(mesh.vertex_neighbors_list[vertex_idx])
+            if base_neighbors > total_neighbors * 0.6:
+                vertex_labels[vertex_idx] = 'base'
+                confidence[vertex_idx] = 0.7
+            elif neighbor_labels:
+                # Use most common non-base neighbor label
                 label_counts = Counter(neighbor_labels)
                 most_common = label_counts.most_common(1)[0]
-                
-                # Only assign if there's reasonable consensus
-                if most_common[1] >= len(neighbor_labels) * 0.4:  # At least 40% agreement
-                    vertex_labels[vertex_idx] = most_common[0]
-                    confidence[vertex_idx] = 0.7  # Moderate confidence for propagated labels
-                    newly_labeled.append(vertex_idx)
-        
-        if not newly_labeled:
-            # No progress made in this iteration
-            break
-            
-        unlabeled = np.setdiff1d(unlabeled, newly_labeled)
-        iterations += 1
-    
-    # Step 5: Assign any remaining unlabeled vertices
-    still_unlabeled = np.where(vertex_labels == "")[0]
-    if len(still_unlabeled) > 0:
-        print(f"  Assigning {len(still_unlabeled)} remaining vertices...")
-        
-        # Find closest labeled vertex for each unlabeled one
-        for vertex_idx in still_unlabeled:
-            # Use BFS to find closest labeled vertex
-            queue = list(mesh.vertex_neighbors_list[vertex_idx])
-            visited = set([vertex_idx])
-            found_label = None
-            
-            while queue and found_label is None:
-                neighbor = queue.pop(0)
-                if vertex_labels[neighbor] != "":
-                    found_label = vertex_labels[neighbor]
-                    break
-                
-                visited.add(neighbor)
-                for next_neighbor in mesh.vertex_neighbors_list[neighbor]:
-                    if next_neighbor not in visited and next_neighbor not in queue:
-                        queue.append(next_neighbor)
-            
-            if found_label is not None:
-                vertex_labels[vertex_idx] = found_label
-                confidence[vertex_idx] = 0.5  # Lower confidence for distant assignments
+                vertex_labels[vertex_idx] = most_common[0]
+                confidence[vertex_idx] = 0.6
             else:
-                # If BFS fails (disconnected component), use nearest labeled vertex in 3D space
-                labeled_vertices = np.where(vertex_labels != "")[0]
-                tree = cKDTree(mesh.vertices[labeled_vertices])
-                _, nn_idx = tree.query(mesh.vertices[vertex_idx].reshape(1, -1))
-                vertex_labels[vertex_idx] = vertex_labels[labeled_vertices[nn_idx[0]]]
-                confidence[vertex_idx] = 0.3  # Even lower confidence
+                # Fallback to base if no clear neighbors
+                vertex_labels[vertex_idx] = 'base'
+                confidence[vertex_idx] = 0.5
     
-    # Step 6: Simple smoothing pass
+    # Step 5: Simple smoothing pass (but don't smooth across base boundaries)
     print("  Smoothing assignments...")
-    for _ in range(3):  # 3 iterations of smoothing
+    for _ in range(3):
         for i in range(len(mesh.vertices)):
-            # Only smooth low-confidence vertices
-            if confidence[i] > 0.8:
+            # Don't smooth high-confidence vertices or base vertices
+            if confidence[i] > 0.8 or vertex_labels[i] == 'base':
                 continue
                 
-            # Get neighbor labels
+            # Get neighbor labels (excluding base)
             neighbor_labels = [
                 vertex_labels[n] for n in mesh.vertex_neighbors_list[i]
+                if vertex_labels[n] != 'base'
             ]
             
             if neighbor_labels:
@@ -1886,6 +1863,14 @@ def segment_mesh_structure_aware(mesh, segmented_points, point_labels, unique_la
                     vertex_labels[i] = most_common
     
     print("Segmentation complete!")
+    
+    # Print final statistics
+    unique_final_labels = np.unique(vertex_labels)
+    for label in unique_final_labels:
+        count = np.sum(vertex_labels == label)
+        percentage = count / len(vertex_labels) * 100
+        print(f"  Label '{label}': {count} vertices ({percentage:.1f}%)")
+    
     return vertex_labels
 
 def process_mesh_segmentation(mesh, vertex_labels, segmented_points, combined_identifiers):
@@ -2982,10 +2967,9 @@ def refine_part_boundaries(mesh, vertex_labels):
     
     return vertex_labels
 
-def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, output_dir, OBJECT, flip_mesh_z=False, inverse_transform=None):
+def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, output_dir, OBJECT, flip_mesh_z=False, inverse_transform=None, max_distance=0.05):
     """
-    Segment a mesh into parts based on point labels and instance IDs using structure-aware segmentation.
-    Combines structure-aware segmentation with proper label handling.
+    Segment a mesh into parts based on point labels and instance IDs, with special handling for 'base' part.
     """
     import numpy as np
     import trimesh
@@ -2993,7 +2977,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
     import os
     import tempfile
     
-    print("\nSegmenting mesh with structure-aware approach...")
+    print("\nSegmenting mesh with structure-aware approach (including base part)...")
     
     # Create a temporary directory
     temp_dir = tempfile.mkdtemp(prefix="mesh_segment_")
@@ -3016,11 +3000,8 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
     # Create a combined label+instance identifier for each point
     combined_identifiers = []
     for i in range(len(point_labels)):
-        # Extract the base label without any trailing numbers
         base_label = point_labels[i]
         instance = instance_ids[i]
-        
-        # Create a combined identifier: label_instanceid
         combined_id = f"{base_label}_{instance}"
         combined_identifiers.append(combined_id)
     
@@ -3028,7 +3009,7 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
     unique_combined_ids = np.unique(combined_identifiers)
     
     print(f"Created {len(unique_combined_ids)} unique part identifiers:")
-    for i, part_id in enumerate(unique_combined_ids[:10]):  # Show first 10
+    for i, part_id in enumerate(unique_combined_ids[:10]):
         count = np.sum(combined_identifiers == part_id)
         print(f"  {part_id}: {count} points")
     if len(unique_combined_ids) > 10:
@@ -3038,39 +3019,46 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
     print("\nAnalyzing structural properties of parts...")
     part_structures = analyze_part_structure(segmented_points, combined_identifiers, unique_combined_ids)
     
-    # Then do the structure-aware segmentation
+    # Then do the structure-aware segmentation with base part support
     print("\nPerforming structure-aware segmentation...")
-    vertex_labels = segment_mesh_structure_aware(mesh, segmented_points, combined_identifiers, unique_combined_ids)
+    vertex_labels = segment_mesh_structure_aware(
+        mesh, segmented_points, combined_identifiers, unique_combined_ids, 
+        max_distance=max_distance
+    )
     
-    # enforce structural constraints
+    # Enforce structural constraints
     print("\nEnforcing structural constraints...")
     vertex_labels = enforce_structural_constraints(mesh, vertex_labels, part_structures)
 
-    # # merge components
-    # vertex_labels = process_mesh_segmentation(mesh, vertex_labels, segmented_points, combined_identifiers)
-
-    # # refine boundaries between parts
-    # vertex_labels = refine_part_boundaries(mesh, vertex_labels)
-    
     # Count assigned vertices
     labeled_vertices = np.sum(vertex_labels != "")
+    base_vertices = np.sum(vertex_labels == "base")
     print(f"Assigned labels to {labeled_vertices} vertices (out of {len(mesh.vertices)})")
+    print(f"Assigned to base: {base_vertices} vertices")
     
-    # Process each unique part
-    for part_id in unique_combined_ids:
+    # Get all unique parts including base
+    all_unique_parts = list(unique_combined_ids) + ['base']
+    
+    # Process each unique part (including base)
+    for part_id in all_unique_parts:
         if part_id == "":
-            continue  # Skip empty identifier
+            continue
             
-        # Split part_id into base_label and instance components
-        parts = part_id.split('_')
-        if len(parts) >= 2:
-            base_label = '_'.join(parts[:-1])
-            instance_num = parts[-1]  # Take the last part as instance number
+        # Handle base part differently
+        if part_id == 'base':
+            base_label = 'base'
+            instance_num = '0'
+            print(f"\nProcessing base part")
         else:
-            base_label = part_id
-            instance_num = "0"
-        
-        print(f"\nProcessing part: {part_id} (label={base_label}, instance={instance_num})")
+            # Split part_id into base_label and instance components
+            parts = part_id.split('_')
+            if len(parts) >= 2:
+                base_label = '_'.join(parts[:-1])
+                instance_num = parts[-1]
+            else:
+                base_label = part_id
+                instance_num = "0"
+            print(f"\nProcessing part: {part_id} (label={base_label}, instance={instance_num})")
         
         # Get vertices with this part identifier
         vertex_mask = vertex_labels == part_id
@@ -3086,57 +3074,43 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
         face_mask = np.all(face_has_label, axis=1)
         
         # Additionally, include faces that have majority (2 of 3) vertices with this label
-        majority_mask = np.sum(face_has_label, axis=1) >= 2 # Do NOT delete
+        majority_mask = np.sum(face_has_label, axis=1) >= 2
         face_mask = face_mask | majority_mask
         
         if not np.any(face_mask):
             print(f"No faces found for part {part_id}, skipping...")
             continue
         
-        # Get the selected faces
+        # Create the part mesh (same as before)
         selected_faces = mesh.faces[face_mask]
-        
-        # Create a set of unique vertices used by these faces
         unique_vertices = np.unique(selected_faces)
-        
-        # Create a mapping from original vertex indices to new indices
         old_to_new = np.full(len(mesh.vertices), -1)
         old_to_new[unique_vertices] = np.arange(len(unique_vertices))
-        
-        # Create new vertices array with exact same 3D coordinates
         new_vertices = mesh.vertices[unique_vertices].copy()
-        
-        # Create new faces array with remapped indices
         new_faces = old_to_new[selected_faces]
         
-        # Create the part mesh with explicit vertices and faces
         part_mesh = trimesh.Trimesh(
             vertices=new_vertices,
             faces=new_faces,
-            process=False  # Don't process the mesh to preserve exact geometry
+            process=False
         )
         
         print(f"Part mesh has {len(part_mesh.vertices)} vertices and {len(part_mesh.faces)} faces")
         print(f"Part bounding box: {part_mesh.bounds}")
         
-        # Transfer texture information if available
+        # Transfer texture information if available (same as before)
         if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'uv'):
-            # Create a TextureVisuals object
             part_mesh.visual = trimesh.visual.texture.TextureVisuals()
             
-            # Transfer the UV coordinates
             if len(mesh.visual.uv) == len(mesh.vertices):
-                # Vertex-based UV mapping
                 part_mesh.visual.uv = mesh.visual.uv[unique_vertices]
                 print(f"Transferred vertex-based UVs: {part_mesh.visual.uv.shape}")
             elif len(mesh.visual.uv) == len(mesh.faces) * 3:
-                # Face-based UV mapping (per corner)
                 original_uvs = mesh.visual.uv.reshape((-1, 3, 2))
                 new_uvs = original_uvs[face_mask]
                 part_mesh.visual.uv = new_uvs.reshape((-1, 2))
                 print(f"Transferred face-based UVs: {new_uvs.shape}")
             
-            # Transfer the material and texture
             if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
                 part_mesh.visual.material = mesh.visual.material.copy()
                 print("Transferred material")
@@ -3145,20 +3119,18 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
                 part_mesh.visual.texture = mesh.visual.texture
                 print("Transferred texture")
 
-        # Apply inverse transformation if provided (to undo ICP alignment)
-        inverse_transform = None
+        # Apply inverse transformation if provided
         if inverse_transform is not None:
             part_mesh.apply_transform(inverse_transform)
             print("Applied inverse transformation to restore original orientation")
         else:
-            theta = np.radians(90)  # -90 box, +90 laptop & drawer
+            theta = np.radians(90)
             rot_z_neg90 = np.array([
                 [np.cos(theta), -np.sin(theta), 0, 0],
                 [np.sin(theta), np.cos(theta), 0, 0],
                 [0, 0, 1, 0],
                 [0, 0, 0, 1]
             ])
-            
             part_mesh.apply_transform(rot_z_neg90)
             print(f'Applied {theta} degree rotation around z axis manually')
         
@@ -3168,10 +3140,9 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
         # Create filename with label and instance number
         filename = f"{safe_label}_{instance_num}"
         
-        # Save as GLB
+        # Save as GLB and OBJ (same as before)
         glb_output_path = os.path.join(output_dir, f'{OBJECT}_{filename}.glb')
         try:
-            # Create a scene with the part mesh to preserve materials
             part_scene = trimesh.Scene(part_mesh)
             part_scene.export(glb_output_path)
             print(f"Saved part mesh to: {glb_output_path}")
@@ -3187,7 +3158,6 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
                 print(f"Verified exported mesh: {len(test_mesh.vertices)} vertices, {len(test_mesh.faces)} faces")
                 print(f"Exported bounding box: {test_mesh.bounds}")
                 
-                # Check if the mesh is flat
                 bounds = test_mesh.bounds
                 dimensions = bounds[1] - bounds[0]
                 if any(dim < 0.001 for dim in dimensions):
@@ -3211,7 +3181,6 @@ def segment_and_save_parts(mesh, segmented_points, point_labels, instance_ids, o
         shutil.rmtree(temp_dir)
     except:
         print(f"Could not remove temporary directory: {temp_dir}")
-
 
 
 # The function for loading EXR depth maps
@@ -3714,7 +3683,8 @@ def segment_model_by_labels(mesh, point_clouds, point_labels, instance_ids, outp
             unique_labels=[instance_id],  # Only process this single instance
             output_dir=output_dir,
             OBJECT=f"{OBJECT}_{instance_id}",  # Include instance ID in output filename
-            flip_mesh_z=False
+            flip_mesh_z=False,
+            max_distance=0.05, 
         )
 
 def register_point_cloud(source_points, target_points, voxel_size=0.05, max_iterations=100, 
@@ -4381,6 +4351,10 @@ def main(OBJECT, flip_z=False):
     # elif "real" in results_paths[0]:
     #     seg_indices = [int(os.path.basename(path).split('real_')[1].split('_')[0]) for path in results_paths]
 
+    camera_params_full = camera_params.copy()
+    depth_maps_full = depth_maps.copy()
+    rgb_images_full = rgb_images.copy()
+
     if not (len(rgb_images) == len(camera_param_files) == len(depth_files) == len(results_paths)):
         # print("Warning: Mismatched number of files. The script may not work correctly.")
 
@@ -4404,7 +4378,7 @@ def main(OBJECT, flip_z=False):
     
     # Lift 2D masks to 3D
     points_3d, labels, instance_ids = lift_2d_masks_to_3d(
-        rgb_images, results_paths, depth_maps, camera_params, 
+        rgb_images, results_paths, depth_maps_full, camera_params_full, 
         OBJECT, output_dir, flip_z=flip_z
     )
     
@@ -4514,7 +4488,7 @@ def main(OBJECT, flip_z=False):
         merged_point_clouds_by_cluster, 
         list(merged_point_clouds_by_cluster.keys()), 
         cluster_to_label,
-        distance_threshold=0.02  # Adjust based on your data scale
+        distance_threshold=0.02  
     )
     
     # Update the main point arrays to reflect the cleaned point clouds
@@ -4538,6 +4512,17 @@ def main(OBJECT, flip_z=False):
         print(f"\nFinal merged point cloud has {len(merged_points)} points with {len(np.unique(merged_instance_ids))} unique parts")
         
         # Visualize merged point cloud
+
+        visualization_path_processed = os.path.join(output_dir, "point_cloud_with_mesh_processed.png")
+        print("\nVisualizing processed point cloud alignment with mesh...")
+        visualize_point_cloud_with_mesh(
+            merged_points, 
+            merged_labels, 
+            aligned_mesh, 
+            visualization_path_processed, 
+            flip_mesh_z=False
+        )
+
         vis_path = os.path.join(output_dir, 'merged_point_cloud.png')
         
         all_camera_params = []
